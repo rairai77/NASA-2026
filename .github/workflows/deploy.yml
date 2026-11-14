@@ -64,19 +64,21 @@ jobs:
         run: pipeline/run_all.sh
 
       # Save right after the pipeline so a failed build/deploy does not lose an expensive run.
+      # Reuse the restore step's key: hashing pipeline/**/*.py again here would include the
+      # freshly created pipeline/.venv and never match the next restore.
       - name: Save raw downloads cache
         if: always() && steps.raw-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: pipeline/raw
-          key: raw-${{ hashFiles('pipeline/fetch.py', 'pipeline/validate_pgda.py') }}
+          key: ${{ steps.raw-cache.outputs.cache-primary-key }}
 
       - name: Save generated data cache
         if: always() && steps.pipeline.outcome == 'success' && steps.data-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: web/public/data
-          key: data-${{ hashFiles('pipeline/**/*.py', 'pipeline/run_all.sh', 'pipeline/pyproject.toml', 'pipeline/uv.lock', 'engine/src/geo.rs', 'engine/src/ephem.rs', 'engine/src/terrain.rs', 'engine/src/horizon.rs', 'engine/src/visibility.rs', 'engine/src/grid.rs', 'engine/src/metrics.rs', 'engine/src/global.rs', 'data-src/**') }}
+          key: ${{ steps.data-cache.outputs.cache-primary-key }}
 
       - name: Generate site list for the Worker prompt
         run: node scripts/gen-sites.mjs
