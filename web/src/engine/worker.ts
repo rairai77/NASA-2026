@@ -1,0 +1,327 @@
+// Engine Web Worker. Owns the wasm Engine (when available), all data fetching
+// (Cache API + in-memory), and exposes EngineApi through Comlink.
+// If ./pkg (wasm-pack output) or /data/ephem/ephem.json is missing we fall back to MockEngine.
+import * as Comlink from 'comlink';
+import type {
+  CuratedSite, EllipseArgs, EllipseResult, EngineApi, HorizonResult, InitInfo, Mission, Progress,
+  Query, RankResult, Site, SunEarth, VisResult,
+} from './api.ts';
+import { loadFaults, loadMissions, loadSites, fetchJsonMaybe } from './catalog.ts';
+import { MockEngine, parseWhen } from './mock.ts';
+
+// import.meta.glob resolves to {} when the pkg has not been generated yet, so the build
+// never breaks on the missing module; once pkg exists it is bundled (lazy chunk).
+const pkgLoaders = import.meta.glob('./pkg/lunar_engine.js') as Record<string, () => Promise<WasmModule>>;
+
+interface WasmEngine {
+  loadEphemeris(metaJson: string, bytes: Uint8Array): void;
+  loadTerrainManifest(json: string): void;
+  addTile(levelId: string, tx: number, ty: number, raw: Uint8Array): void;
+  hasTile(levelId: string, tx: number, ty: number): boolean;
+  requiredTiles(lat: number, lon: number, maxDistKm: number | undefined, nAz: number): string[];
+  requiredTilesArea(lat: number, lon: number, radiusKm: number, levelId?: string): string[];
+  requiredTilesRect(west: number, south: number, east: number, north: number, w: number, h: number): string[];
+  horizon(lat: number, lon: number, heightM: number, nAz: number): HorizonResult;
+  visibility(lat: number, lon: number, heightM: number, elevDeg: Float32Array, tStart: number, tEnd: number, stepS: number): VisResult;
+  loadIndexManifest(json: string): void;
+  loadIndexStatic(raw: Uint8Array): void;
+  addIndexMonth(month: string, raw: Uint8Array): void;
+  addHorizonBand(band: number, raw: Uint8Array): void;
+  indexMonthsNeeded(tStart: number, tEnd: number): string[];
+  rankCoarse(query: Query): { candidates: unknown[]; bandsNeeded: number[]; stats?: unknown };
+  rankRefine(query: Query, candidates: unknown[]): RankResult;
+  rankPoints(query: Query, points: { id: string; lat: number; lon: number; elevDeg: Float32Array }[]): RankResult;
+  ellipse(lat: number, lon: number, a: number, b: number, rot: number, n: number, h: number, tS: number, tE: number, stepS: number): EllipseResult;
+  sampleHeights(w: number, s: number, e: number, n: number, nw: number, nh: number): Float32Array;
+  sunEarthAt(lat: number, lon: number, t: number): SunEarth;
+  threads?: () => number;
+}
+interface WasmModule {
+  default: (arg?: unknown) => Promise<unknown>;
+  Engine: new () => WasmEngine;
+  initThreadPool?: (n: number) => Promise<void>;
+}
+
+interface TerrainLevel { id: string; path: string; missing?: string[] }
+interface TerrainManifest { levels: TerrainLevel[] }
+interface IndexManifest {
+  months: { month: string; file: string }[];
+  horizons: { bands: string[] };
+  static: { file: string };
+}
+
+// ---------------------------------------------------------------------------------------
+// Data fetching: in-memory map + Cache API, gunzip via DecompressionStream
+// ---------------------------------------------------------------------------------------
+const CACHE_NAME = 'lunar-data-v1';
+const mem = new Map<string, Promise<Uint8Array | null>>();
+
+async function gunzip(buf: ArrayBuffer): Promise<Uint8Array> {
+  const ds = new DecompressionStream('gzip');
+  const stream = new Blob([buf]).stream().pipeThrough(ds);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/** Fetch raw bytes (no gunzip). Returns null when the file is absent. */
+async function fetchRaw(url: string): Promise<ArrayBuffer | null> {
+  let cache: Cache | undefined;
+  // no persistent cache in dev: data files change while the pipeline is still running
+  if (!import.meta.env.DEV) { try { cache = await caches.open(CACHE_NAME); } catch { /* Cache API unavailable */ } }
+  try {
+    const hit = await cache?.match(url);
+    if (hit) return await hit.arrayBuffer();
+  } catch { /* ignore */ }
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  if ((res.headers.get('content-type') ?? '').includes('text/html')) return null; // SPA fallback => absent
+  const buf = await res.arrayBuffer();
+  try { await cache?.put(url, new Response(buf.slice(0), { headers: { 'content-type': 'application/octet-stream' } })); } catch { /* quota */ }
+  return buf;
+}
+
+/** Cached, de-duplicated fetch; *.gz files are gunzipped. null if absent/corrupt. */
+function getBytes(url: string): Promise<Uint8Array | null> {
+  let p = mem.get(url);
+  if (!p) {
+    p = (async () => {
+      try {
+        const buf = await fetchRaw(url);
+        if (!buf) return null;
+        if (!url.endsWith('.gz')) return new Uint8Array(buf);
+        const u8 = new Uint8Array(buf);
+        // Some servers (e.g. Vite dev) add Content-Encoding: gzip to *.gz, so the browser has
+        // already inflated it. Only gunzip when the gzip magic number is still present.
+        return u8.length > 2 && u8[0] === 0x1f && u8[1] === 0x8b ? await gunzip(buf) : u8;
+      } catch (e) {
+        console.warn('[engine] fetch failed', url, e);
+        return null;
+      }
+    })();
+    mem.set(url, p);
+    p.then((v) => { if (v === null) mem.delete(url); });
+  }
+  return p;
+}
+
+async function mapLimit<T>(items: T[], limit: number, fn: (x: T, i: number) => Promise<void>) {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) { const i = next++; await fn(items[i], i); }
+  });
+  await Promise.all(workers);
+}
+
+// ---------------------------------------------------------------------------------------
+// Real engine wrapper
+// ---------------------------------------------------------------------------------------
+class RealEngine implements EngineApi {
+  private eng!: WasmEngine;
+  private base = '/';
+  private terrain: TerrainManifest | null = null;
+  private index: IndexManifest | null = null;
+  private indexReady?: Promise<boolean>;
+  private mock = new MockEngine();
+  private notes: string[] = [];
+  private curatedP?: Promise<Record<string, CuratedSite>>;
+
+  /** Returns null when the real engine can't start (so the caller falls back to mock). */
+  async tryInit(baseUrl: string): Promise<InitInfo | null> {
+    this.base = baseUrl;
+    const loader = pkgLoaders['./pkg/lunar_engine.js'];
+    if (!loader) { this.notes.push('wasm pkg not built (web/src/engine/pkg missing)'); return null; }
+    const ephemMeta = await getBytes(`${baseUrl}data/ephem/ephem.json`);
+    const ephemBin = await getBytes(`${baseUrl}data/ephem/ephem.f32`);
+    if (!ephemMeta || !ephemBin) { this.notes.push('/data/ephem/ephem.json missing'); return null; }
+    try {
+      const mod = await loader();
+      await mod.default();
+      this.eng = new mod.Engine();
+      this.eng.loadEphemeris(new TextDecoder().decode(ephemMeta), ephemBin);
+    } catch (e) {
+      this.notes.push(`wasm init failed: ${(e as Error).message}`);
+      console.warn('[engine] wasm init failed', e);
+      return null;
+    }
+    const tm = await getBytes(`${baseUrl}data/terrain/manifest.json`);
+    if (tm) {
+      this.terrain = JSON.parse(new TextDecoder().decode(tm));
+      this.eng.loadTerrainManifest(new TextDecoder().decode(tm));
+    } else this.notes.push('terrain manifest missing: horizons use demo terrain');
+    const meta = JSON.parse(new TextDecoder().decode(ephemMeta));
+    await this.mock.init(baseUrl);
+    return {
+      threads: self.navigator.hardwareConcurrency ?? 1,
+      crossOriginIsolated: self.crossOriginIsolated === true,
+      dataVersion: `${meta.start_utc ?? '?'}..${meta.end_utc ?? '?'}`, mode: 'wasm', notes: this.notes,
+    };
+  }
+
+  async init(baseUrl: string): Promise<InitInfo> {
+    const r = await this.tryInit(baseUrl);
+    if (!r) throw new Error('real engine unavailable');
+    return r;
+  }
+
+  sites(): Promise<Site[]> { return loadSites(this.base); }
+  missions(): Promise<Mission[]> { return loadMissions(this.base); }
+  faults() { return loadFaults(this.base); }
+  curated(): Promise<Record<string, CuratedSite>> {
+    return (this.curatedP ??= fetchJsonMaybe<Record<string, CuratedSite>>(`${this.base}data/curated.json`).then((c) => c ?? {}));
+  }
+
+  // ---- tiles -------------------------------------------------------------------------
+  private tilePath(levelId: string, tx: number, ty: number): string | null {
+    const lvl = this.terrain?.levels.find((l) => l.id === levelId);
+    if (!lvl) return null;
+    if (lvl.missing?.includes(`${tx},${ty}`)) return null;
+    return `${this.base}data/${lvl.path.replace('{ty}', String(ty)).replace('{tx}', String(tx))}`;
+  }
+
+  /** keys look like "s0/ty/tx" */
+  private async ensureTiles(keys: string[], onProgress?: (p: Progress) => void): Promise<void> {
+    if (!this.terrain) return;
+    const todo = keys.map((k) => {
+      const [lvl, ty, tx] = k.split('/');
+      return { lvl, tx: Number(tx), ty: Number(ty) };
+    }).filter((t) => !this.eng.hasTile(t.lvl, t.tx, t.ty));
+    let done = 0;
+    await mapLimit(todo, 8, async (t) => {
+      const path = this.tilePath(t.lvl, t.tx, t.ty);
+      if (path) {
+        const raw = await getBytes(path);
+        if (raw) { try { this.eng.addTile(t.lvl, t.tx, t.ty, raw); } catch (e) { console.warn('[engine] addTile', e); } }
+      }
+      onProgress?.({ stage: 'Loading terrain tiles', done: ++done, total: todo.length });
+    });
+  }
+
+  async horizon(lat: number, lon: number, heightM = 2): Promise<HorizonResult> {
+    if (!this.terrain) return this.mock.horizon(lat, lon, heightM);
+    await this.ensureTiles(this.eng.requiredTiles(lat, lon, undefined, 720));
+    return this.eng.horizon(lat, lon, heightM, 720);
+  }
+
+  async visibility(lat: number, lon: number, tStart: number, tEnd: number, opts?: { heightM?: number; stepS?: number; elevDeg?: Float32Array }): Promise<VisResult> {
+    const h = opts?.heightM ?? 2;
+    const elev = opts?.elevDeg ?? (await this.horizon(lat, lon, h)).elevDeg;
+    return this.eng.visibility(lat, lon, h, elev, tStart, tEnd, opts?.stepS ?? 900);
+  }
+
+  async compare(points: { id: string; lat: number; lon: number }[], tStart: number, tEnd: number) {
+    const out: Record<string, VisResult> = {};
+    for (const p of points) out[p.id] = await this.visibility(p.lat, p.lon, tStart, tEnd);
+    return out;
+  }
+
+  // ---- ranking -----------------------------------------------------------------------
+  private async ensureIndex(): Promise<boolean> {
+    return (this.indexReady ??= (async () => {
+      const m = await getBytes(`${this.base}data/index/manifest.json`);
+      const st = m && JSON.parse(new TextDecoder().decode(m)) as IndexManifest;
+      if (!m || !st) { this.notes.push('index manifest missing: rank uses demo data'); return false; }
+      const stat = await getBytes(`${this.base}data/${st.static.file}`);
+      if (!stat) return false;
+      this.eng.loadIndexManifest(new TextDecoder().decode(m));
+      this.eng.loadIndexStatic(stat);
+      this.index = st;
+      return true;
+    })());
+  }
+
+  async rank(q: Query, onProgress?: (p: Progress) => void): Promise<RankResult> {
+    const tS = parseWhen(q.window.start), tE = parseWhen(q.window.end);
+    if (q.region.type === 'sites') {
+      const [sites, curated] = await Promise.all([this.sites(), this.curated()]);
+      const pts: { id: string; lat: number; lon: number; elevDeg: Float32Array }[] = [];
+      let i = 0;
+      for (const id of q.region.ids) {
+        const s = sites.find((x) => x.id === id);
+        if (!s) continue;
+        const c = curated[id];
+        const elevDeg = c ? Float32Array.from(c.horizon) : (await this.horizon(s.lat, s.lon, q.height_m)).elevDeg;
+        pts.push({ id, lat: s.lat, lon: s.lon, elevDeg });
+        onProgress?.({ stage: 'Loading horizons', done: ++i, total: q.region.ids.length });
+      }
+      const r = this.eng.rankPoints(q, pts);
+      // attach ids by lat/lon match
+      r.results.forEach((e) => { e.id = pts.find((p) => Math.abs(p.lat - e.lat) < 1e-6 && Math.abs(p.lon - e.lon) < 1e-6)?.id; });
+      return r;
+    }
+    if (!(await this.ensureIndex())) return this.mock.rank(q, onProgress);
+    const idx = this.index!;
+    const months = this.eng.indexMonthsNeeded(tS, tE);
+    let done = 0;
+    await mapLimit(months, 8, async (mo) => {
+      const entry = idx.months.find((x) => x.month === mo);
+      if (!entry) return;
+      const raw = await getBytes(`${this.base}data/${entry.file}`);
+      if (raw) this.eng.addIndexMonth(mo, raw);
+      onProgress?.({ stage: 'Loading index months', done: ++done, total: months.length });
+    });
+    onProgress?.({ stage: 'Coarse screening', done: 0, total: 1 });
+    const coarse = this.eng.rankCoarse(q);
+    let bd = 0;
+    await mapLimit(coarse.bandsNeeded, 8, async (b) => {
+      const raw = await getBytes(`${this.base}data/${idx.horizons.bands[b]}`);
+      if (raw) this.eng.addHorizonBand(b, raw);
+      onProgress?.({ stage: 'Loading horizon bands', done: ++bd, total: coarse.bandsNeeded.length });
+    });
+    onProgress?.({ stage: 'Refining at 15 min', done: 0, total: 1 });
+    const res = this.eng.rankRefine(q, coarse.candidates);
+    onProgress?.({ stage: 'Done', done: 1, total: 1 });
+    return res;
+  }
+
+  async ellipse(a: EllipseArgs): Promise<EllipseResult> {
+    const radiusKm = Math.max(a.semiMajorM, a.semiMinorM) / 1000 + 1;
+    const keys = new Set([
+      ...this.eng.requiredTiles(a.lat, a.lon, undefined, 720),
+      ...this.eng.requiredTilesArea(a.lat, a.lon, radiusKm),
+    ]);
+    await this.ensureTiles([...keys]);
+    return this.eng.ellipse(a.lat, a.lon, a.semiMajorM, a.semiMinorM, a.rotDeg, a.n, a.heightM ?? 2, a.tStart, a.tEnd, a.stepS ?? 3600);
+  }
+
+  async sampleHeights(w: number, s: number, e: number, n: number, nw: number, nh: number): Promise<Float32Array> {
+    await this.ensureTiles(this.eng.requiredTilesRect(w, s, e, n, nw, nh));
+    return this.eng.sampleHeights(w, s, e, n, nw, nh);
+  }
+
+  async sunEarthAt(lat: number, lon: number, t: number): Promise<SunEarth> {
+    return this.eng.sunEarthAt(lat, lon, t);
+  }
+}
+
+// ---------------------------------------------------------------------------------------
+// Dispatcher: real engine if it initialises, otherwise MockEngine
+// ---------------------------------------------------------------------------------------
+let impl: EngineApi = new MockEngine();
+
+const api: EngineApi = {
+  async init(baseUrl) {
+    try {
+      const real = new RealEngine();
+      const info = await real.tryInit(baseUrl);
+      if (info) { impl = real; return info; }
+      const notes = [...((real as unknown as { notes: string[] }).notes ?? [])];
+      impl = new MockEngine(notes.length ? notes : ['Mock engine: synthetic demo data']);
+    } catch (e) {
+      console.warn('[engine] falling back to mock', e);
+      impl = new MockEngine([`engine error: ${(e as Error).message}`]);
+    }
+    return impl.init(baseUrl);
+  },
+  sites: () => impl.sites(),
+  missions: () => impl.missions(),
+  curated: () => impl.curated(),
+  horizon: (la, lo, h) => impl.horizon(la, lo, h),
+  visibility: (la, lo, a, b, o) => impl.visibility(la, lo, a, b, o),
+  compare: (p, a, b) => impl.compare(p, a, b),
+  rank: (q, cb) => impl.rank(q, cb),
+  ellipse: (a) => impl.ellipse(a),
+  sampleHeights: (...a) => impl.sampleHeights(...a),
+  sunEarthAt: (la, lo, t) => impl.sunEarthAt(la, lo, t),
+  faults: () => impl.faults(),
+};
+
+Comlink.expose(api);

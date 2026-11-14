@@ -18,3 +18,4 @@ __pycache__/
 .DS_Store
 .dev.vars
 dist-data/
+web/src/engine/pkg/
