@@ -58,9 +58,17 @@ Expected differences, so a bias of a few percent is not a bug:
   is a 240 m mask of cells never lit over the cycle, so small cold traps inside a cell differ.
 - Different DEM generations and sampling (cell centre vs 240 m pixel, bilinear).
 
-Result: not yet run (the index `static.f32` did not exist when this was written). Run
-`cd pipeline && uv run python validate_pgda.py`; it prints the table and writes `pipeline/work/pgda_compare.json`.
-Target: r > 0.9 for both quantities. Replace this paragraph with the numbers.
+Result (72,324 valid 1 km cells, 85-90°S; target r > 0.9):
+
+| quantity | Pearson r (all cells) | r (20 rank-spaced cells) | mean ours / PGDA | bias (ours - PGDA) | RMSE |
+|---|---|---|---|---|---|
+| Sun (our sun_frac_5yr vs PGDA avg. illumination) | 0.976 | 0.996 | 0.196 / 0.220 | -0.023 | 0.039 |
+| Earth (our earth_frac_5yr vs PGDA avg. Earth visibility) | 0.974 | 0.988 | 0.216 / 0.264 | -0.049 | 0.070 |
+
+PSR: 7,174 cells are permanently dark in both; 1,633 are dark only in ours (2026-2030 window is shorter than PGDA's
+cycle, and our Sun-up needs half the disc), 48 only in PGDA. Agreement 97.7%, IoU 0.81. Our values run slightly
+lower than PGDA, as expected from the stricter Sun (half disc) and Earth (centre, not any part) definitions.
+Reproduce: `cd pipeline && uv run python validate_pgda.py` (writes `pipeline/work/pgda_compare.json`).
 
 The same data feeds the globe layers (`pipeline/layers.py`), which also use Diviner annual maximum surface and
 average (2 cm) temperature from the LRO Diviner Polar Resource Product (75-90S, ~500 m triangle mesh). Spot check:

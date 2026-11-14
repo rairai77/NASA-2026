@@ -50,14 +50,14 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: pipeline/raw
-          key: raw-${{ hashFiles('pipeline/fetch.py') }}
+          key: raw-${{ hashFiles('pipeline/fetch.py', 'pipeline/validate_pgda.py') }}
 
       - name: Restore generated data cache
         id: data-cache
         uses: actions/cache/restore@v4
         with:
           path: web/public/data
-          key: data-${{ hashFiles('pipeline/**/*.py', 'pipeline/pyproject.toml', 'pipeline/uv.lock', 'engine/src/**', 'engine/Cargo.toml', 'data-src/**') }}
+          key: data-${{ hashFiles('pipeline/**/*.py', 'pipeline/run_all.sh', 'pipeline/pyproject.toml', 'pipeline/uv.lock', 'engine/src/geo.rs', 'engine/src/ephem.rs', 'engine/src/terrain.rs', 'engine/src/horizon.rs', 'engine/src/visibility.rs', 'engine/src/grid.rs', 'engine/src/metrics.rs', 'data-src/**') }}
 
       - name: Generate data (pipeline)
         id: pipeline
@@ -69,14 +69,14 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: pipeline/raw
-          key: raw-${{ hashFiles('pipeline/fetch.py') }}
+          key: raw-${{ hashFiles('pipeline/fetch.py', 'pipeline/validate_pgda.py') }}
 
       - name: Save generated data cache
         if: always() && steps.pipeline.outcome == 'success' && steps.data-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: web/public/data
-          key: data-${{ hashFiles('pipeline/**/*.py', 'pipeline/pyproject.toml', 'pipeline/uv.lock', 'engine/src/**', 'engine/Cargo.toml', 'data-src/**') }}
+          key: data-${{ hashFiles('pipeline/**/*.py', 'pipeline/run_all.sh', 'pipeline/pyproject.toml', 'pipeline/uv.lock', 'engine/src/geo.rs', 'engine/src/ephem.rs', 'engine/src/terrain.rs', 'engine/src/horizon.rs', 'engine/src/visibility.rs', 'engine/src/grid.rs', 'engine/src/metrics.rs', 'data-src/**') }}
 
       - name: Generate site list for the Worker prompt
         run: node scripts/gen-sites.mjs

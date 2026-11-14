@@ -8,6 +8,7 @@ RAW = Path(__file__).parent / "raw"
 NAIF = "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/"
 GDR = "https://pds-geosciences.wustl.edu/lro/lro-l-lola-3-rdr-v1/lrolol_1xxx/data/lola_gdr/"
 SVS = "https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/"
+DIVINER = "https://pds-geosciences.wustl.edu/lro/urn-nasa-pds-lro_diviner_derived1/data_derived_prp/"
 
 NAIF_FILES = [
     "lsk/naif0012.tls", "spk/planets/de440s.bsp", "pck/moon_pa_de440_200625.bpc",
@@ -25,6 +26,9 @@ def jobs():
         for ext in ("lbl", "img"):
             yield f"{GDR}{sub}/img/{n}.{ext}", RAW / "lola" / f"{n}.{ext}"
     yield SVS + "lroc_color_poles_8k.tif", RAW / "svs" / "lroc_color_poles_8k.tif"
+    # Diviner Polar Resource Product (annual max / avg temperature, 75-90S) for the globe layers
+    for ext in ("lbl", "xml", "tab"):
+        yield f"{DIVINER}dlre_prp_south.{ext}", RAW / "diviner" / f"dlre_prp_south.{ext}"
 
 def fetch(url, dest, s):
     dest.parent.mkdir(parents=True, exist_ok=True)
