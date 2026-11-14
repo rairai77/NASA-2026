@@ -99,7 +99,15 @@ async function handleParse(request: Request, env: Env): Promise<Response> {
       const timeout = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
       return err(502, timeout ? "parser timed out" : "parser unreachable");
     }
-    if (!res.ok) return err(502, `parser upstream error (${res.status})`);
+    if (!res.ok) {
+      // Surface the provider's own message (never contains the key) so misconfiguration is diagnosable.
+      let detail = "";
+      try {
+        const e = (await res.json()) as { error?: { message?: unknown } };
+        if (typeof e?.error?.message === "string") detail = `: ${e.error.message.slice(0, 200)}`;
+      } catch { /* ignore */ }
+      return err(502, `parser upstream error (${res.status})${detail}`);
+    }
     try {
       const data = (await res.json()) as {
         choices?: { message?: { tool_calls?: { function?: { name?: string; arguments?: string } }[] } }[];

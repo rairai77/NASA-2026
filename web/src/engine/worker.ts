@@ -328,9 +328,10 @@ class RealEngine implements EngineApi {
     if (!this.terrain || !this.eng.shadowPatch) return this.mock.shadowPatch(lat, lon, sizeKm, px, t);
     const keys = this.eng.requiredTilesPatch ? this.eng.requiredTilesPatch(lat, lon, sizeKm, px) : this.eng.requiredTilesArea(lat, lon, sizeKm / 2 + 20);
     await this.ensureTiles(keys);
-    const r = this.eng.shadowPatch(lat, lon, sizeKm, px, t) as { data?: Uint8Array; px?: number; centerLat?: number; centerLon?: number } | Uint8Array;
+    const r = this.eng.shadowPatch(lat, lon, sizeKm, px, t) as { data?: Uint8Array; px?: number; centerLat?: number; centerLon?: number; sunAz?: number; sunEl?: number } | Uint8Array;
     if (r instanceof Uint8Array) return { lat, lon, sizeKm, px, data: r };
-    return { lat: r.centerLat ?? lat, lon: r.centerLon ?? lon, sizeKm, px: r.px ?? px, data: r.data as Uint8Array };
+    const out: ShadowPatch = { lat: r.centerLat ?? lat, lon: r.centerLon ?? lon, sizeKm, px: r.px ?? px, data: r.data as Uint8Array, sunAz: r.sunAz, sunEl: r.sunEl };
+    return Comlink.transfer(out, [out.data.buffer]);
   }
 }
 

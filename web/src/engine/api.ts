@@ -143,6 +143,8 @@ export interface SunEarth {
 export interface ShadowPatch {
   lat: number; lon: number; sizeKm: number; px: number;
   data: Uint8Array;
+  /** Sun azimuth/elevation (deg) at the patch centre */
+  sunAz?: number; sunEl?: number;
   /** true when synthetic (wasm engine without shadowPatch) */
   mock?: boolean;
 }
