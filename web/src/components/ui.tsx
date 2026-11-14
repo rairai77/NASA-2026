@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { CircleAlert, Info, X } from 'lucide-react';
 import { useStore } from '../store.ts';
 import { ALIASES, TIPS } from '../lib/educatorText.ts';
 
@@ -47,7 +48,11 @@ export function Popover({ trigger, children, className = '', onToggle }: { trigg
   return (
     <span className={`popwrap ${className}`} ref={ref}>
       {trigger(open, () => { setOpen(!open); onToggle?.(!open); })}
-      {open && <div className="pop" role="dialog">{children}</div>}
+      {open && (
+        <div className="pop" role="dialog" onClick={(e) => { if ((e.target as HTMLElement).closest('[data-close-popover]')) { setOpen(false); onToggle?.(false); } }}>
+          {children}
+        </div>
+      )}
     </span>
   );
 }
@@ -59,7 +64,9 @@ export function Badge({ children, tone = '', title }: { children: ReactNode; ton
 export function Toast() {
   const t = useStore((s) => s.toast);
   if (!t) return null;
-  return <div className="toast" role="status" key={t.id}>{t.msg}</div>;
+  const bad = /fail|unavailable|error|not available|select a site/i.test(t.msg);
+  const Ic = bad ? CircleAlert : Info;
+  return <div className={`toast ${bad ? 'bad' : ''}`} role="status" key={t.id}><Ic aria-hidden className="toast-ico" /><span>{t.msg}</span><button className="toast-x" aria-label="Dismiss" onClick={() => useStore.setState({ toast: null })}><X aria-hidden /></button></div>;
 }
 
 export function useEscape(active: boolean, fn: () => void) {
@@ -118,12 +125,12 @@ export function Segmented<T extends string>({ options, value, onChange, label }:
 }
 
 export function Tabs<T extends string>({ tabs, active, onChange, className = '' }: {
-  tabs: { id: T; label: ReactNode; icon?: IconType; count?: number | string }[]; active: T; onChange: (id: T) => void; className?: string;
+  tabs: { id: T; label: ReactNode; icon?: IconType; count?: number | string; title?: string }[]; active: T; onChange: (id: T) => void; className?: string;
 }) {
   return (
     <div className={`ui-tabs ${className}`} role="tablist">
       {tabs.map((t) => (
-        <button key={t.id} type="button" role="tab" aria-selected={t.id === active} className={t.id === active ? 'on' : ''} onClick={() => onChange(t.id)}>
+        <button key={t.id} type="button" role="tab" title={t.title} aria-selected={t.id === active} className={t.id === active ? 'on' : ''} onClick={() => onChange(t.id)}>
           {t.icon && <t.icon aria-hidden />}{t.label}{t.count != null && <span className="ui-count">{t.count}</span>}
         </button>
       ))}

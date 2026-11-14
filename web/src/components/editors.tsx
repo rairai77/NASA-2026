@@ -3,7 +3,8 @@ import type { Filter, Objective, Query } from '../engine/api.ts';
 import { RANKABLE, METRIC_BY_NAME, metricLabel } from '../query/metrics.ts';
 import { addDays, regionIsCoarse } from '../query/query.ts';
 import { useStore } from '../store.ts';
-import { NumInput } from './ui.tsx';
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, TriangleAlert, X } from 'lucide-react';
+import { Button, IconButton, NumInput } from './ui.tsx';
 
 export function WindowEditor({ q, onChange }: { q: Query; onChange: (w: Query['window']) => void }) {
   const s = q.window.start.slice(0, 10), e = q.window.end.slice(0, 10);
@@ -12,14 +13,16 @@ export function WindowEditor({ q, onChange }: { q: Query; onChange: (w: Query['w
     <div className="ed">
       <label>Start (UTC)<input type="date" value={s} onChange={(ev) => ev.target.value && onChange({ start: ev.target.value, end: e <= ev.target.value ? addDays(ev.target.value, 1) : e })} /></label>
       <label>End (exclusive)<input type="date" value={e} min={addDays(s, 1)} onChange={(ev) => ev.target.value && onChange({ start: s, end: ev.target.value })} /></label>
-      <div className="row">
-        <button className="btn sm" onClick={() => shift(-30)}>{'−'}30 d</button>
-        <button className="btn sm" onClick={() => shift(30)}>+30 d</button>
-        <button className="btn sm" onClick={() => shift(-91)}>{'−'}3 mo</button>
-        <button className="btn sm" onClick={() => shift(91)}>+3 mo</button>
+      <div className="ed-lbl">Shift the window</div>
+      <div className="row shift">
+        <Button size="sm" icon={ChevronLeft} onClick={() => shift(-30)}>30 d</Button>
+        <Button size="sm" iconRight={ChevronRight} onClick={() => shift(30)}>30 d</Button>
+        <Button size="sm" icon={ChevronLeft} onClick={() => shift(-91)}>3 mo</Button>
+        <Button size="sm" iconRight={ChevronRight} onClick={() => shift(91)}>3 mo</Button>
       </div>
-      <div className="row">
-        {[7, 30, 90, 365].map((d) => <button key={d} className="btn sm ghost" onClick={() => onChange({ start: s, end: addDays(s, d) })}>{d} d long</button>)}
+      <div className="ed-lbl">Or set its length</div>
+      <div className="row shift">
+        {[7, 30, 90, 365].map((d) => <Button key={d} size="sm" variant="ghost" onClick={() => onChange({ start: s, end: addDays(s, d) })}>{d} d</Button>)}
       </div>
     </div>
   );
@@ -83,7 +86,7 @@ export function RegionEditor({ q, onChange }: { q: Query; onChange: (r: Query['r
         </>
       )}
       {r.type === 'global' && <p className="hint">Searches every ~10 km cell on the Moon.</p>}
-      {regionIsCoarse(r) && <p className="hint warnline">{'⚠'} Coarse 10 km screening: this region reaches outside the south polar cap (below {'−'}85{'°'}), so it uses the global grid (10 km cells, 6 h steps). Distance-to-PSR and distance-to-fault filters do not work there.</p>}
+      {regionIsCoarse(r) && <p className="hint warnline"><TriangleAlert aria-hidden size={13} /> Coarse 10 km screening: this region reaches outside the south polar cap (below {'−'}85{'°'}), so it uses the global grid (10 km cells, 6 h steps). Distance-to-PSR and distance-to-fault filters do not work there.</p>}
       {r.type === 'sites' && (
         <>
           <input className="txt" placeholder="Filter sites…" value={filter} onChange={(e) => setFilter(e.target.value)} />
@@ -128,8 +131,8 @@ export function FilterEditor({ f, onChange, onRemove }: { f: Filter; onChange: (
       </select>
       <NumInput value={f.value} onChange={(value) => onChange({ ...f, value })} aria-label="Filter value" />
       <span className="unit">{unit}</span>
-      {coarse && METRIC_BY_NAME[f.metric]?.polarOnly && <span className="hint warnline" title="Not available on the 10 km global grid">{'⚠'} fails on the global grid</span>}
-      {onRemove && <button className="icon-btn" aria-label="Remove filter" onClick={onRemove}>{'×'}</button>}
+      {coarse && METRIC_BY_NAME[f.metric]?.polarOnly && <span className="hint warnline" title="Not available on the 10 km global grid"><TriangleAlert aria-hidden size={12} /> fails on the global grid</span>}
+      {onRemove && <IconButton icon={X} label="Remove filter" size="sm" tip="none" onClick={onRemove} />}
     </div>
   );
 }
@@ -138,8 +141,8 @@ export function ObjectiveEditor({ o, onChange, onRemove }: { o: Objective; onCha
   return (
     <div className="row ed-row">
       <MetricSelect value={o.metric} onChange={(metric) => onChange({ ...o, metric })} />
-      <button className="btn sm" onClick={() => onChange({ ...o, dir: o.dir === 'max' ? 'min' : 'max' })}>{o.dir === 'max' ? '▲ max' : '▼ min'}</button>
-      {onRemove && <button className="icon-btn" aria-label="Remove objective" onClick={onRemove}>{'×'}</button>}
+      <Button size="sm" icon={o.dir === 'max' ? ArrowUp : ArrowDown} title="Toggle maximise / minimise" onClick={() => onChange({ ...o, dir: o.dir === 'max' ? 'min' : 'max' })}>{o.dir === 'max' ? 'Max' : 'Min'}</Button>
+      {onRemove && <IconButton icon={X} label="Remove objective" size="sm" tip="none" onClick={onRemove} />}
     </div>
   );
 }

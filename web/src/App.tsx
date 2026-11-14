@@ -1,15 +1,18 @@
-import { lazy, Suspense, useEffect, useMemo } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
+import { ArrowLeft, Compass, Download, Ellipsis, GraduationCap, Link2, ListOrdered, MapPin, Search, ShieldCheck, SlidersHorizontal, Clock } from 'lucide-react';
 import { Drawer } from './components/Drawer.tsx';
 import { FirstPerson } from './components/FirstPerson.tsx';
 import { LeftPanel } from './components/LeftPanel.tsx';
-import { Chips, QueryBuilder, QueryInput } from './components/QueryBar.tsx';
+import { QueryBuilder, QueryInput, QueryStrip } from './components/QueryBar.tsx';
 import { Timeline } from './components/Timeline.tsx';
-import { Badge, Toast } from './components/ui.tsx';
+import { Badge, Button, IconButton, Popover, Tabs, Toast } from './components/ui.tsx';
+import { Splash } from './components/Splash.tsx';
+import { Welcome } from './components/Welcome.tsx';
 import { ValidationModal } from './components/ValidationModal.tsx';
 import { buildCsv, download, type CsvRow } from './lib/csv.ts';
 import { encodeState } from './lib/share.ts';
 import { DAY, HOUR } from './lib/time.ts';
-import { applyNasaScreening, bootstrap, dataKey, refreshData, saveScenario, setCursor, stubOf, toast, useStore, windowOf, useActiveIds } from './store.ts';
+import { bootstrap, dataKey, refreshData, saveScenario, setCursor, stubOf, toast, useStore, windowOf, useActiveIds } from './store.ts';
 import { Tour } from './components/Tour.tsx';
 
 const Globe = lazy(() => import('./globe/Globe.tsx'));
@@ -36,24 +39,61 @@ function exportCsv() {
   download('lunar-navigator-export.csv', buildCsv(rows, `${new Date(a * 1000).toISOString()} to ${new Date(b * 1000).toISOString()}`));
 }
 
+function useMedia(q: string): boolean {
+  const [m, setM] = useState(() => typeof window !== 'undefined' && window.matchMedia(q).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(q);
+    const h = () => setM(mq.matches);
+    h(); mq.addEventListener('change', h);
+    return () => mq.removeEventListener('change', h);
+  }, [q]);
+  return m;
+}
+
+const closePops = () => document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+function shareLink() {
+  try { history.replaceState(null, '', currentHash()); } catch { /* ignore */ }
+  navigator.clipboard?.writeText(location.href).then(() => toast('Link copied to clipboard'), () => toast('Copy failed: copy the address bar URL'));
+}
+
 function TopBar() {
   const educator = useStore((s) => s.educator);
   const info = useStore((s) => s.info);
+  const [askOpen, setAskOpen] = useState(false);
+  const toggleEdu = () => useStore.setState({ educator: !educator });
+  const build = () => useStore.setState({ builderOpen: true });
+  const how = () => useStore.setState({ validationOpen: true });
+  const tour = () => useStore.setState({ tourStep: 0 });
   return (
-    <header className="topbar">
-      <div className="brand"><span className="logo" aria-hidden /><div><b>Lunar Landing Site Navigator</b><small>Sun {'·'} Earth {'·'} horizon</small></div></div>
-      <QueryInput />
-      <div className="top-actions">
-        {info?.mode === 'mock' && <Badge tone="demo" title={info.notes.join('\n')}>demo data</Badge>}
-        <button className={`btn toggle ${educator ? 'on' : ''}`} aria-pressed={educator} onClick={() => useStore.setState({ educator: !educator })} title="Plain-language labels and short 'why?' explanations">
-          Educator mode
-        </button>
-        <button className="btn" onClick={() => { navigator.clipboard?.writeText(location.href).then(() => toast('Link copied to clipboard'), () => toast('Copy failed: copy the address bar URL')); }}>Share</button>
-        <button className="btn" onClick={exportCsv} title="Export timeline and metrics of the selected sites as CSV">CSV</button>
-        {educator && <button className="btn" onClick={() => useStore.setState({ tourStep: 0 })}>Start tour</button>}
-        <button className="btn ghost" onClick={() => useStore.setState({ validationOpen: true })}>How we know it{'’'}s right</button>
+    <header className={`topbar ${askOpen ? 'ask-open' : ''}`}>
+      <div className="brand"><span className="logo" aria-hidden /><b>Lunar Landing Site Navigator</b></div>
+      <div className="tb-mid">
+        <button className="tb-back phone-only" aria-label="Close search" onClick={() => setAskOpen(false)}><ArrowLeft aria-hidden /></button>
+        <QueryInput onDone={() => setAskOpen(false)} />
+        <Button variant="ghost" icon={SlidersHorizontal} className="tb-build desk-only" onClick={build}><span className="lbl">Build query</span></Button>
       </div>
-      <div className="chiprow"><Chips /><button className="chip preset" onClick={applyNasaScreening} title="Adds: slope ≤ 10° (proxy for landing slope), Earth visible \u2265 25% and Sun \u2265 5% of the window, region within 6° of the pole. Approximation of public Artemis screening criteria.">NASA Artemis screening (approx.)</button></div>
+      <div className="tb-right">
+        {info?.mode === 'mock' && <Badge tone="demo" title={info.notes.join('\n')}>demo data</Badge>}
+        <span className="desk-only tb-icons">
+          <IconButton icon={Link2} label="Share link" onClick={shareLink} />
+          <IconButton icon={Download} label="Export CSV of the selected sites" onClick={exportCsv} />
+          <IconButton icon={GraduationCap} label={educator ? 'Educator mode: on' : 'Educator mode: plain-language help'} active={educator} onClick={toggleEdu} />
+          {educator && <IconButton icon={Compass} label="Start the guided tour" onClick={tour} />}
+        </span>
+        <Button icon={ShieldCheck} className="tb-how desk-only" onClick={how}><span className="lbl">How we know</span></Button>
+        <IconButton icon={Search} label="Ask a question" className="phone-only" onClick={() => { setAskOpen(true); setTimeout(() => (document.querySelector('.qtext') as HTMLInputElement | null)?.focus(), 30); }} />
+        <Popover className="phone-only pop-right" trigger={(open, toggle) => <IconButton icon={Ellipsis} label="More actions" active={open} tip="none" onClick={toggle} />}>
+          <div className="menu" onClick={closePops}>
+            <button onClick={build}><SlidersHorizontal aria-hidden />Build query</button>
+            <button onClick={shareLink}><Link2 aria-hidden />Share link</button>
+            <button onClick={exportCsv}><Download aria-hidden />Export CSV</button>
+            <button onClick={toggleEdu}><GraduationCap aria-hidden />Educator mode<small>{educator ? 'on' : 'off'}</small></button>
+            {educator && <button onClick={tour}><Compass aria-hidden />Start the tour</button>}
+            <button onClick={how}><ShieldCheck aria-hidden />How we know it{'’'}s right</button>
+          </div>
+        </Popover>
+      </div>
     </header>
   );
 }
@@ -121,19 +161,58 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const gridCols = useMemo(() => (selected ? '320px minmax(0,1fr) 356px' : '320px minmax(0,1fr)'), [selected]);
+  const phone = useMedia('(max-width: 899px)');
+  const phoneTab = useStore((s) => s.phoneTab);
+  const resultsN = useStore((s) => s.results?.results.length ?? 0);
+  const tab = phoneTab === 'site' && !selected ? 'results' : phoneTab;
+
+  // phone: picking something on the globe or in the list opens the Site sheet (only for user-initiated changes)
+  useEffect(() => {
+    let last = 0;
+    const down = () => { last = performance.now(); };
+    window.addEventListener('pointerdown', down, true);
+    const un = useStore.subscribe((st, p) => {
+      if (st.selected && st.selected !== p.selected && window.matchMedia('(max-width: 899px)').matches && performance.now() - last < 700 && st.tourStep === null) useStore.setState({ phoneTab: 'site' });
+    });
+    return () => { window.removeEventListener('pointerdown', down, true); un(); };
+  }, []);
+
+  const globe = (
+    <div className="center" data-tour="globe">
+      <Suspense fallback={<div className="globe-loading">Loading 3D Moon{'…'}</div>}><Globe /></Suspense>
+      <Splash />
+      <Welcome />
+    </div>
+  );
   return (
-    <div className="app">
+    <div className={`app ${phone ? 'is-phone' : ''}`}>
       <TopBar />
-      <main className="main" style={{ gridTemplateColumns: gridCols }}>
-        <LeftPanel />
-        <div className="center">
-          <Suspense fallback={<div className="globe-loading">Loading 3D Moon{'…'}</div>}><Globe /></Suspense>
-        </div>
-        {selected && <Drawer />}
-        {fpOpen && <div className="fp-layer"><FirstPerson /></div>}
-      </main>
-      <Timeline />
+      <QueryStrip />
+      {phone ? (
+        <main className="main phone">
+          {globe}
+          <div className="sheet" data-tab={tab}>
+            {tab === 'results' && <LeftPanel />}
+            {tab === 'timeline' && <Timeline />}
+          </div>
+          {selected && tab === 'site' && !fpOpen && <div className="site-sheet"><Drawer /></div>}
+          <div className="sheet-tabs">
+            <Tabs active={tab} onChange={(t) => useStore.setState({ phoneTab: t })}
+              tabs={[{ id: 'results', label: 'Results', icon: ListOrdered, count: resultsN || undefined }, { id: 'site', label: 'Site', icon: MapPin }, { id: 'timeline', label: 'Timeline', icon: Clock }]} />
+          </div>
+          {fpOpen && <div className="fp-layer"><FirstPerson /></div>}
+        </main>
+      ) : (
+        <>
+          <main className={`main ${selected ? 'has-sel' : ''}`}>
+            <LeftPanel />
+            {globe}
+            {selected && <Drawer />}
+            {fpOpen && <div className="fp-layer"><FirstPerson /></div>}
+          </main>
+          <Timeline />
+        </>
+      )}
       <QueryBuilder />
       <ValidationModal />
       <Tour />

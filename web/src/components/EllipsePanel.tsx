@@ -5,7 +5,8 @@ import { getEngine } from '../engine/client.ts';
 import { fmtMetric, metricLabel } from '../query/metrics.ts';
 import { useStore, windowOf, type Target } from '../store.ts';
 import { MetricSelectAll } from './MetricSelectAll.tsx';
-import { NumInput, Why } from './ui.tsx';
+import { Play } from 'lucide-react';
+import { Button, NumInput, Why } from './ui.tsx';
 
 const SUMMARY = ['sun_hours', 'longest_dark_h', 'earth_hours', 'longest_both_h', 'slope_deg'];
 
@@ -31,19 +32,19 @@ export function EllipsePanel({ target }: { target: Target }) {
   };
 
   return (
-    <section className="ellipse">
-      <h3>Landing ellipse<Why id="ellipse" /> <small>worst / median / best over {Math.round(n)} points</small></h3>
-      <div className="grid4">
+    <section className="ellipse pn-ell">
+      <div className="pn-pane-h"><h3 className="ui-section-title">Landing ellipse<Why id="ellipse" /></h3><small>worst / median / best over {Math.round(n)} points</small></div>
+      <div className="pn-limits pn-limits--4">
         <label>Semi-major (m)<NumInput value={a} min={10} max={5000} width={64} onChange={setA} /></label>
         <label>Semi-minor (m)<NumInput value={b} min={10} max={5000} width={64} onChange={setB} /></label>
         <label>Rotation ({'°'} from N)<NumInput value={rot} min={0} max={180} width={64} onChange={setRot} /></label>
         <label>Points (n)<NumInput value={n} min={10} max={400} width={64} onChange={setN} /></label>
       </div>
-      <button className="btn primary" onClick={run} disabled={busy}>{busy ? 'Computing…' : 'Run ellipse'}</button>
-      {err && <p className="err">{err}</p>}
+      <Button variant="primary" icon={Play} onClick={run} disabled={busy}>{busy ? 'Computing…' : 'Run ellipse'}</Button>
+      {err && <p className="pn-err">{err}</p>}
       {res && (
         <>
-          <table className="mtable ell">
+          <table className="pn-table pn-ell-t">
             <thead><tr><th /><th>min</th><th>median</th><th>max</th></tr></thead>
             <tbody>
               {SUMMARY.map((k) => res.summary[k] && (
@@ -51,7 +52,7 @@ export function EllipsePanel({ target }: { target: Target }) {
               ))}
             </tbody>
           </table>
-          <div className="sec-h"><h3>Per-point map</h3><MetricSelectAll value={metric} onChange={setMetric} keys={SUMMARY} /></div>
+          <div className="pn-pane-h"><h3 className="ui-section-title">Per-point map</h3><MetricSelectAll value={metric} onChange={setMetric} keys={SUMMARY} /></div>
           <Scatter res={res} metric={metric} lat={target.lat} lon={target.lon} />
         </>
       )}
@@ -73,15 +74,15 @@ function Scatter({ res, metric, lat, lon }: { res: EllipseResult; metric: string
   const lo = Math.min(...vals), hi = Math.max(...vals);
   const col = d3.scaleSequential(d3.interpolateViridis).domain([lo, hi === lo ? lo + 1 : hi]);
   return (
-    <div className="scatter">
+    <div className="scatter pn-scatter">
       <svg viewBox={`0 0 ${S} ${S}`} role="img" aria-label={`Per-point ${metric} within the landing ellipse`}>
-        <rect x={0} y={0} width={S} height={S} fill="#05070c" />
-        <line x1={sc(0)} x2={sc(0)} y1={pad} y2={S - pad} stroke="#1f2837" /><line y1={sc(0)} y2={sc(0)} x1={pad} x2={S - pad} stroke="#1f2837" />
+        <rect x={0} y={0} width={S} height={S} className="hp-bg" />
+        <line x1={sc(0)} x2={sc(0)} y1={pad} y2={S - pad} className="hp-axis" /><line y1={sc(0)} y2={sc(0)} x1={pad} x2={S - pad} className="hp-axis" />
         <text x={S / 2} y={10} textAnchor="middle" className="ptxt">N</text>
         {pts.map((p, i) => <circle key={i} cx={sc(p.e)} cy={S - sc(p.n)} r={4} fill={col(p.v)} />)}
       </svg>
       <div className="cbar"><span>{fmtMetric(metric, lo).replace(/ \(.*\)/, '')}</span><i style={{ background: 'linear-gradient(90deg,#440154,#3b528b,#21918c,#5ec962,#fde725)' }} /><span>{fmtMetric(metric, hi).replace(/ \(.*\)/, '')}</span></div>
-      <p className="hint">Extent {'±'}{Math.round(ext)} m. Colour is not red/green; viridis is colour-blind safe.</p>
+      <p className="pn-hint">Extent {'±'}{Math.round(ext)} m. Colour is not red/green; viridis is colour-blind safe.</p>
     </div>
   );
 }

@@ -1,24 +1,34 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
+import { ArrowDown, ArrowUp, FastForward, Save } from 'lucide-react';
 import { metricLabel, fmtMetric, TABLE_METRICS, STATIC_METRICS, METRIC_BY_NAME } from '../query/metrics.ts';
 import { parseWhen } from '../lib/time.ts';
 import { saveScenario, slipLaunch, useStore, type Scenario } from '../store.ts';
-import { drawRow } from './Timeline.tsx';
-
-function Mini({ s }: { s: Scenario }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const c = ref.current!, W = 280, H = 34, dpr = window.devicePixelRatio || 1;
-    c.width = W * dpr; c.height = H * dpr;
-    const g = c.getContext('2d')!;
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    g.clearRect(0, 0, W, H);
-    const a = s.vis.t[0], b = s.vis.t[s.vis.t.length - 1];
-    drawRow(g, s.vis, (t) => ((t - a) / (b - a)) * W, a, b, W, 0);
-  }, [s]);
-  return <canvas ref={ref} style={{ width: 280, height: 34 }} className="spark" aria-label={`Scenario ${s.label} timeline`} />;
-}
+import { placeFor } from '../lib/places.ts';
+import { Button } from './ui.tsx';
+import { LaneStrip } from './LaneStrip.tsx';
 
 const days = (s: Scenario) => ((parseWhen(s.query.window.end) - parseWhen(s.query.window.start)) / 86400).toFixed(0);
+const winOf = (s: Scenario): [number, number] => [parseWhen(s.query.window.start), parseWhen(s.query.window.end)];
+
+function Slot({ label, s }: { label: 'A' | 'B'; s: Scenario | null }) {
+  const sites = useStore((st) => st.sites);
+  const name = s ? (s.target.kind === 'result' ? placeFor(s.target.lat, s.target.lon, sites).title : s.target.name) : 'Empty';
+  return (
+    <section className={`pn-slot ${s ? '' : 'is-empty'}`}>
+      <header>
+        <span className={`pn-chip pn-chip--${label}`}>{label}</span>
+        <b>{name}</b>
+      </header>
+      {s ? (
+        <>
+          <small className="mono">{s.query.window.start.slice(0, 10)} {'→'} {s.query.window.end.slice(0, 10)} ({days(s)} d)</small>
+          <LaneStrip vis={s.vis} win={winOf(s)} labels={false} label={`Scenario ${label} timeline`} />
+        </>
+      ) : <small>Nothing saved yet</small>}
+      <Button size="sm" icon={Save} onClick={() => saveScenario(label)}>Save current as {label}</Button>
+    </section>
+  );
+}
 
 export function DiffTab() {
   const A = useStore((s) => s.scenA);
@@ -33,31 +43,34 @@ export function DiffTab() {
     .sort((x, y) => Math.abs(y.d) / (Math.abs(y.a as number) + 1) - Math.abs(x.d) / (Math.abs(x.a as number) + 1))
     .slice(0, 5);
   return (
-    <div className="tab-body">
-      <p className="hint">Save the current scenario (query + selected site + window) as A or B, then compare.</p>
-      <div className="row"><button className="btn sm" onClick={() => saveScenario('A')}>Save as A</button><button className="btn sm" onClick={() => saveScenario('B')}>Save as B</button></div>
-      <div className="slip">
-        <span>Launch slipped by</span>
-        <input className="num" type="number" min={-52} max={52} value={weeks} onChange={(e) => setWeeks(parseInt(e.target.value) || 0)} aria-label="weeks" style={{ width: 54 }} />
-        <span>weeks</span>
-        <button className="btn sm primary" onClick={() => slipLaunch(weeks)} title="Pins the current result as A, shifts the window, re-ranks and saves B">Apply</button>
+    <div className="pn-body">
+      <div className="pn-head">
+        <h2 className="pn-h">Scenarios</h2>
+        <p className="pn-sub">Save the current query, window and selected site as A or B, then compare.</p>
       </div>
-      {[A, B].map((s, i) => (
-        <div key={i} className="scen">
-          <b>{i === 0 ? 'A' : 'B'}{s ? `: ${s.target.name}` : ': (empty)'}</b>
-          {s && <><small>{s.query.window.start.slice(0, 10)} {'→'} {s.query.window.end.slice(0, 10)} ({days(s)} d)</small><Mini s={s} /></>}
+      <div className="pn-slots"><Slot label="A" s={A} /><Slot label="B" s={B} /></div>
+      <section className="pn-slip">
+        <h3 className="ui-section-title">What if the launch slips?</h3>
+        <div className="pn-slip-row">
+          <span>Slip by</span>
+          <input className="num" type="number" min={-52} max={52} value={weeks} onChange={(e) => setWeeks(parseInt(e.target.value) || 0)} aria-label="weeks" />
+          <span>weeks</span>
+          <Button variant="primary" size="sm" icon={FastForward} onClick={() => slipLaunch(weeks)} title="Pins the current result as A, shifts the window, re-ranks and saves B">Apply</Button>
         </div>
-      ))}
+      </section>
       {A && B && (
         <>
-          <div className="diffchips">
-            {chips.length === 0 && <span className="hint">No notable differences.</span>}
+          <h3 className="ui-section-title">Biggest changes (B vs A)</h3>
+          <div className="pn-dchips">
+            {chips.length === 0 && <span className="pn-hint">No notable differences.</span>}
             {chips.map((c) => (
-              <span key={c.k} className={`dchip ${c.d > 0 ? 'up' : 'down'}`}>{metricLabel(c.k, edu)} {c.d > 0 ? '+' : '−'}{fmtMetric(c.k, Math.abs(c.d)).replace(/ \(.*\)/, '')}</span>
+              <span key={c.k} className={`pn-dchip ${c.d > 0 ? 'up' : 'down'}`}>
+                {c.d > 0 ? <ArrowUp aria-hidden /> : <ArrowDown aria-hidden />}{metricLabel(c.k, edu)} {c.d > 0 ? '+' : '−'}{fmtMetric(c.k, Math.abs(c.d)).replace(/ \(.*\)/, '')}
+              </span>
             ))}
           </div>
-          <table className="mtable diff">
-            <thead><tr><th /><th>A</th><th>B</th><th>{'Δ'}</th></tr></thead>
+          <table className="pn-table pn-diff">
+            <thead><tr><th /><th><span className="pn-chip pn-chip--A">A</span></th><th><span className="pn-chip pn-chip--B">B</span></th><th>{'Δ'}</th></tr></thead>
             <tbody>
               {rows.map((r) => {
                 const d = (r.b as number) - (r.a as number);
@@ -73,7 +86,7 @@ export function DiffTab() {
               })}
             </tbody>
           </table>
-          <p className="hint">{'▲'} blue = B higher than A, {'▼'} orange = B lower. Higher is not always better (e.g. longest dark run).</p>
+          <p className="pn-hint">{'▲'} blue = B higher than A, {'▼'} orange = B lower. Higher is not always better (e.g. longest dark run).</p>
         </>
       )}
     </div>

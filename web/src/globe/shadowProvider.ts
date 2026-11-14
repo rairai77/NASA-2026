@@ -20,7 +20,7 @@ export class ShadowImageryProvider {
   ready = true;
   readyEvent = new CEvent();
   private U: Cartesian3; private E: Cartesian3; private N: Cartesian3;
-  private halfM: number; private pixelM: number;
+  private halfM: number; private pixelM: number; private feather = 0.05; private maxAlpha = 0.92;
   private blank?: HTMLCanvasElement;
 
   constructor(private patch: ShadowPatch) {
@@ -30,6 +30,10 @@ export class ShadowImageryProvider {
     this.N = new Cartesian3(-Math.sin(lat) * Math.cos(lon), -Math.sin(lat) * Math.sin(lon), Math.cos(lat));
     this.halfM = (patch.sizeKm * 1000) / 2;
     this.pixelM = (patch.sizeKm * 1000) / patch.px;
+    // Regional patches fade out over a wider rim and let a little base texture through, so the patch edge
+    // doesn't read as a dark disc against the (uniformly lit) base mosaic. Local patches stay crisp.
+    this.feather = patch.sizeKm > 200 ? 0.14 : 0.05;
+    this.maxAlpha = patch.sizeKm > 200 ? 0.86 : 0.92;
     // A level-L geographic tile pixel is ~R*pi/2^L/256 m; past the patch resolution Cesium upsamples.
     this.maximumLevel = Math.max(1, Math.min(16, Math.ceil(Math.log2((R * Math.PI) / TS / this.pixelM)) + 1));
     // Bounding rectangle of the (round) patch: sample its rim through the inverse gnomonic map.
@@ -99,8 +103,8 @@ export class ShadowImageryProvider {
         const lightness = sun * (0.25 + 0.75 * rel);
         const o = 4 * (j * TS + i);
         img.data[o] = 6; img.data[o + 1] = 9; img.data[o + 2] = 20; // earthshine-tinted black
-        const edge = Math.max(0, Math.min(1, (1 - rr) / 0.05));
-        img.data[o + 3] = 255 * 0.93 * (1 - lightness) * edge;
+        const edge = Math.max(0, Math.min(1, (1 - rr) / this.feather));
+        img.data[o + 3] = 255 * this.maxAlpha * (1 - lightness) * edge;
         any = true;
       }
     }

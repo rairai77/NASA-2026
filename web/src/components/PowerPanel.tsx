@@ -5,7 +5,8 @@ import type { Panel, PanelKind, PowerResult } from '../engine/api.ts';
 import { getEngine } from '../engine/client.ts';
 import { fmtDur, HOUR } from '../lib/time.ts';
 import { patchQuery, seriesStep, setPanel, useStore, windowOf, type Target } from '../store.ts';
-import { NumInput } from './ui.tsx';
+import { Check, ChevronDown, ChevronRight, CircleCheck, CircleX, Settings2, Zap } from 'lucide-react';
+import { Button, NumInput, Stat } from './ui.tsx';
 
 export const PANEL_KINDS: [PanelKind, string][] = [
   ['vertical_tracking', 'Vertical, sun-tracking'],
@@ -41,6 +42,9 @@ export function PanelFields({ panel, onChange }: { panel: Panel; onChange: (p: P
 }
 
 const fmtWh = (v: number) => (Math.abs(v) >= 10000 ? `${(v / 1000).toFixed(1)} kWh` : `${Math.round(v)} Wh`);
+function whParts(v: number): { value: string; unit: string } {
+  return Math.abs(v) >= 10000 ? { value: (v / 1000).toFixed(1), unit: 'kWh' } : { value: String(Math.round(v)), unit: 'Wh' };
+}
 
 export function PowerPanel({ target }: { target: Target }) {
   const panel = useStore((s) => s.panel);
@@ -51,7 +55,7 @@ export function PowerPanel({ target }: { target: Target }) {
   const [res, setRes] = useState<PowerResult | null>(null);
   const [state, setState] = useState<'idle' | 'busy' | 'unsupported' | 'error'>('idle');
   const [err, setErr] = useState('');
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const win = windowOf(query);
   const cur = useRef<object>({});
 
@@ -72,49 +76,51 @@ export function PowerPanel({ target }: { target: Target }) {
   const spanH = (win[1] - win[0]) / HOUR;
   const survives = res ? res.survivesNight : null;
   const battery = panel.batteryWh ?? 0;
+  const e = res ? whParts(res.energyWh) : null, perDay = res ? whParts(res.whPerDay) : null, need = res ? whParts(res.batteryWhNeeded) : null;
   return (
-    <section className="powercard">
-      <div className="sec-h">
-        <h3>Power{'—'}solar + battery</h3>
-        <button className="btn sm ghost" onClick={() => setOpen(!open)} aria-expanded={open}>{open ? 'Hide inputs' : 'Edit panel'}</button>
-      </div>
-      {open && <PanelFields panel={panel} onChange={setPanel} />}
-      {state === 'unsupported' && <p className="hint">The power model needs the real engine (demo mode has none).</p>}
-      {state === 'error' && <p className="err">{err}</p>}
+    <div className="pn-pane">
+      {state === 'busy' && !res && <div className="ui-skel pn-plot-skel" style={{ height: 120 }} />}
+      {state === 'unsupported' && <p className="pn-hint">The power model needs the real engine (demo mode has none).</p>}
+      {state === 'error' && <p className="pn-err">{err}</p>}
       {res && (
         <>
-          <div className={`verdict ${survives ? 'yes' : 'no'}`} role="status">
-            {survives ? '✔ Survives the longest night' : '✖ Does not survive the longest night'}
-            <small>{res.longestDarkH > 0
-              ? `Longest dark: ${fmtDur(res.longestDarkH * HOUR)}. Needs ${fmtWh(res.batteryWhNeeded)} usable (${panel.loadW} W ${'×'} ${res.longestDarkH.toFixed(0)} h / ${panel.depthOfDischarge}); you have ${fmtWh(battery)}.`
-              : 'No dark period in this window.'}</small>
+          <div className={`pn-verdict ${survives ? 'yes' : 'no'}`} role="status">
+            {survives ? <CircleCheck aria-hidden /> : <CircleX aria-hidden />}
+            <div>
+              <b>{survives ? 'Survives the longest night' : 'Does not survive the longest night'}</b>
+              <small>{res.longestDarkH > 0
+                ? `Longest dark: ${fmtDur(res.longestDarkH * HOUR)}. Needs ${fmtWh(res.batteryWhNeeded)} usable (${panel.loadW} W ${'×'} ${res.longestDarkH.toFixed(0)} h / ${panel.depthOfDischarge}); you have ${fmtWh(battery)}.`
+                : 'No dark period in this window.'}</small>
+            </div>
           </div>
-          <table className="mtable">
-            <tbody>
-              <tr><th>Energy over window</th><td>{fmtWh(res.energyWh)}</td></tr>
-              <tr><th>Per day (average)</th><td>{fmtWh(res.whPerDay)}/day</td></tr>
-              <tr><th>Battery needed</th><td>{fmtWh(res.batteryWhNeeded)}</td></tr>
-              <tr><th>Longest dark</th><td>{res.longestDarkH.toFixed(0)} h ({(res.longestDarkH / 24).toFixed(1)} d)</td></tr>
-              <tr><th>Load over window</th><td>{fmtWh(panel.loadW * spanH)}</td></tr>
-            </tbody>
-          </table>
+          <div className="pn-stats pn-stats--4">
+            <Stat label="Energy" value={e!.value} unit={e!.unit} tone="sun" title="Energy over the window" />
+            <Stat label="Per day" value={perDay!.value} unit={`${perDay!.unit}/d`} title="Average per day" />
+            <Stat label="Battery" value={need!.value} unit={need!.unit} tone={survives ? 'ok' : 'warn'} title="Battery needed" />
+            <Stat label="Longest dark" value={res.longestDarkH.toFixed(0)} unit="h" title={`${(res.longestDarkH / 24).toFixed(1)} days`} />
+          </div>
           <PowerSpark res={res} win={win} cursor={cursor} panel={panel} />
+          <p className="pn-small">Load over window: <span className="mono">{fmtWh(panel.loadW * spanH)}</span></p>
         </>
       )}
-      <div className="row">
-        <button className={`btn sm ${attached ? 'on' : ''}`} onClick={() => patchQuery({ power: attached ? null : { ...panel } })}
-          title="Adds this panel to the search so Energy and Battery needed can be used as filters or objectives">
-          {attached ? '✔ Used in search' : 'Use this panel in search'}
+      <section className="pn-fold">
+        <button className="pn-fold-h" onClick={() => setOpen(!open)} aria-expanded={open}>
+          {open ? <ChevronDown aria-hidden /> : <ChevronRight aria-hidden />}<Settings2 aria-hidden /><span>Panel settings</span><small>{panelSummary(panel)}</small>
         </button>
-      </div>
-      <p className="hint">Energy = 1361 W/m{'²'} {'×'} area {'×'} efficiency {'×'} Sun visibility {'×'} incidence. With the panel in the search, add an {'“'}Energy{'”'} or {'“'}Battery needed{'”'} filter or objective.</p>
-    </section>
+        {open && <div className="pn-fold-b"><PanelFields panel={panel} onChange={setPanel} /></div>}
+      </section>
+      <Button size="sm" icon={attached ? Check : Zap} active={attached} onClick={() => patchQuery({ power: attached ? null : { ...panel } })}
+        title="Adds this panel to the search so Energy and Battery needed can be used as filters or objectives">
+        {attached ? 'Used in search' : 'Use this panel in search'}
+      </Button>
+      <p className="pn-hint">Energy = 1361 W/m{'²'} {'×'} area {'×'} efficiency {'×'} Sun visibility {'×'} incidence. With the panel in the search, add an {'“'}Energy{'”'} or {'“'}Battery needed{'”'} filter or objective.</p>
+    </div>
   );
 }
 
 function PowerSpark({ res, win, cursor, panel }: { res: PowerResult; win: [number, number]; cursor: number; panel: Panel }) {
   const ref = useRef<HTMLCanvasElement>(null);
-  const W = 310, H = 46;
+  const W = 340, H = 56;
   useEffect(() => {
     const c = ref.current;
     if (!c) return;
@@ -122,7 +128,7 @@ function PowerSpark({ res, win, cursor, panel }: { res: PowerResult; win: [numbe
     c.width = W * dpr; c.height = H * dpr;
     const g = c.getContext('2d')!;
     g.scale(dpr, dpr);
-    g.fillStyle = 'rgba(255,255,255,0.05)'; g.fillRect(0, 0, W, H);
+    g.fillStyle = 'rgba(255,255,255,0.04)'; g.fillRect(0, 0, W, H);
     const n = res.powerW.length;
     if (n < 2) return;
     let max = 1;
@@ -130,7 +136,7 @@ function PowerSpark({ res, win, cursor, panel }: { res: PowerResult; win: [numbe
     max = Math.max(max, panel.loadW);
     const x = (t: number) => ((t - win[0]) / (win[1] - win[0])) * W;
     // dark stretches (no power) tinted
-    g.fillStyle = 'rgba(0,0,0,0.35)';
+    g.fillStyle = 'rgba(0,0,0,0.4)';
     let run = -1;
     for (let i = 0; i <= n; i++) {
       const dark = i < n && res.powerW[i] <= 0;
@@ -141,17 +147,19 @@ function PowerSpark({ res, win, cursor, panel }: { res: PowerResult; win: [numbe
     g.fillStyle = '#F5B700';
     const colMax = new Float32Array(W);
     for (let i = 0; i < n; i++) { const c0 = Math.min(W - 1, Math.max(0, Math.floor(x(res.t[i])))); if (res.powerW[i] > colMax[c0]) colMax[c0] = res.powerW[i]; }
-    for (let c0 = 0; c0 < W; c0++) { const h = (colMax[c0] / max) * (H - 4); if (h > 0) g.fillRect(c0, H - 2 - h, 1, h); }
+    for (let c0 = 0; c0 < W; c0++) { const h = (colMax[c0] / max) * (H - 6); if (h > 0) g.fillRect(c0, H - 2 - h, 1, h); }
     // load line
-    g.strokeStyle = '#ff6b6b'; g.setLineDash([3, 3]);
-    const ly = H - 2 - (panel.loadW / max) * (H - 4);
+    g.strokeStyle = '#f87171'; g.lineWidth = 1.2; g.setLineDash([3, 3]);
+    const ly = H - 2 - (panel.loadW / max) * (H - 6);
     g.beginPath(); g.moveTo(0, ly); g.lineTo(W, ly); g.stroke(); g.setLineDash([]);
-    if (cursor >= win[0] && cursor <= win[1]) { g.strokeStyle = '#fff'; g.beginPath(); g.moveTo(x(cursor) + 0.5, 0); g.lineTo(x(cursor) + 0.5, H); g.stroke(); }
+    if (cursor >= win[0] && cursor <= win[1]) { g.strokeStyle = '#fff'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(x(cursor) + 0.5, 0); g.lineTo(x(cursor) + 0.5, H); g.stroke(); }
   }, [res, win, cursor, panel.loadW]);
+  let peak = 0;
+  for (let i = 0; i < Math.min(res.powerW.length, 20000); i++) if (res.powerW[i] > peak) peak = res.powerW[i];
   return (
-    <div>
-      <canvas ref={ref} style={{ width: W, height: H, maxWidth: '100%', borderRadius: 6, display: 'block' }} aria-label="Panel power over the window" />
-      <p className="hint"><span style={{ color: '#F5B700' }}>{'■'}</span> panel power (peak {Math.round(Math.max(...Array.from(res.powerW.slice(0, 20000))))} W) {'·'} <span style={{ color: '#ff6b6b' }}>{'- -'}</span> load {panel.loadW} W {'·'} shaded = dark. Aligned to the timeline window.</p>
+    <div className="pn-spark">
+      <canvas ref={ref} aria-label="Panel power over the window" />
+      <p className="pn-keys"><span><i className="ui-dot ui-dot--sun" />Panel power (peak {Math.round(peak)} W)</span><span><i className="pn-dash" />Load {panel.loadW} W</span><span><i className="pn-shade" />Dark</span></p>
     </div>
   );
 }

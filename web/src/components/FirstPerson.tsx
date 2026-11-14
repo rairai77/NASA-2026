@@ -2,7 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { countdowns, sampleAt, type Sample } from '../lib/countdown.ts';
 import { fmtUTC } from '../lib/time.ts';
 import { useStore, windowOf } from '../store.ts';
-import { COLORS } from './LeftPanel.tsx';
+import { COLORS } from './Timeline.tsx';
+import { Globe as GlobeIcon, Sun, X } from 'lucide-react';
+import { placeFor, shortName } from '../lib/places.ts';
+import { Button, IconButton, Segmented, Tag } from './ui.tsx';
 
 const D2R = Math.PI / 180;
 const SUN_R = 0.2666; // deg
@@ -161,10 +164,11 @@ function render(g: CanvasRenderingContext2D, sc: Scene) {
   void x0;
 
   // compass strip
-  const stripH = 34;
-  g.fillStyle = 'rgba(5,7,12,0.78)';
+  const stripH = 42;
+  g.fillStyle = 'rgba(5,7,12,0.86)';
   g.fillRect(0, H - stripH, W, stripH);
-  g.strokeStyle = 'rgba(190,200,220,0.7)';
+  g.fillStyle = 'rgba(255,255,255,0.12)'; g.fillRect(0, H - stripH, W, 1);
+  g.strokeStyle = 'rgba(200,210,230,0.8)';
   g.fillStyle = '#c9d2e6';
   g.font = '600 12px ui-sans-serif, system-ui, sans-serif';
   g.textAlign = 'center';
@@ -177,10 +181,10 @@ function render(g: CanvasRenderingContext2D, sc: Scene) {
     g.beginPath(); g.moveTo(x, H - stripH); g.lineTo(x, H - stripH + (major ? 10 : 5)); g.stroke();
     if (az % 45 === 0) {
       const names: Record<number, string> = { 0: 'N', 45: 'NE', 90: 'E', 135: 'SE', 180: 'S', 225: 'SW', 270: 'W', 315: 'NW' };
-      g.fillStyle = az % 90 === 0 ? '#fff' : '#c9d2e6';
-      g.font = `700 ${az % 90 === 0 ? 14 : 12}px ui-sans-serif, system-ui, sans-serif`;
-      g.fillText(names[az], x, H - 8);
-    } else if (major) { g.fillStyle = '#7f8aa3'; g.font = '11px ui-sans-serif, system-ui, sans-serif'; g.fillText(String(az), x, H - 8); }
+      g.fillStyle = az % 90 === 0 ? '#fff' : '#dbe2f1';
+      g.font = `700 ${az % 90 === 0 ? 16 : 13}px "Inter Variable", ui-sans-serif, system-ui, sans-serif`;
+      g.fillText(names[az], x, H - 10);
+    } else if (major) { g.fillStyle = '#a3adc4'; g.font = '500 11.5px "JetBrains Mono", ui-monospace, monospace'; g.fillText(`${az}\u00b0`, x, H - 10); }
   }
   // markers for Sun and Earth azimuth on the strip
   for (const [az, c] of [[now.sunAz, COLORS.sun], [now.earthAz, COLORS.earth]] as [number, string][]) {
@@ -237,6 +241,7 @@ export function FirstPerson() {
   const d = useStore((s) => (s.selected ? s.data[s.selected] : undefined));
   const cursor = useStore((s) => s.cursor);
   const query = useStore((s) => s.query);
+  const sites = useStore((s) => s.sites);
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ W: 1000, H: 520 });
@@ -285,6 +290,8 @@ export function FirstPerson() {
 
   if (!open || !t) return null;
   const cd = countdowns(d?.vis, cursor, win[1]);
+  const place = t.kind === 'site' ? shortName(t.name) : placeFor(t.lat, t.lon, sites).title;
+  const close = () => useStore.setState({ fpOpen: false });
   return (
     <div className="fp" ref={hostRef}>
       <canvas
@@ -295,32 +302,31 @@ export function FirstPerson() {
         onWheel={(e) => setFov((f) => Math.min(120, Math.max(20, f * Math.exp(e.deltaY * 0.001))))}
         aria-label="First-person view from the site: drag to look around, wheel to zoom"
       />
-      <div className="fp-top">
-        <div className="fp-title">
-          <b>{t.name}</b>
-          <span>{t.lat.toFixed(3)}{'°'}, {t.lon.toFixed(3)}{'°'} {'·'} {query.height_m} m above terrain</span>
+      <div className="fp-card">
+        <div>
+          <h2>{t.rank ? `#${t.rank} ` : ''}{place}</h2>
+          <div className="fp-sub">{t.lat.toFixed(3)}{'\u00b0'}, {t.lon.toFixed(3)}{'\u00b0'} {'\u00b7'} {query.height_m} m above terrain</div>
         </div>
-        <button className="icon-btn big" aria-label="Close first-person view" onClick={() => useStore.setState({ fpOpen: false })}>{'×'}</button>
+        {cd && (
+          <div className="fp-cds">
+            <div className={`fp-cd sun ${cd.sunSoon ? 'soon' : ''}`}><Sun aria-hidden />{cd.sun}</div>
+            <div className={`fp-cd earth ${cd.earthSoon ? 'soon' : ''}`}><GlobeIcon aria-hidden />{cd.earth}</div>
+          </div>
+        )}
+        <div className="fp-meta">
+          <span>{fmtUTC(cursor)}</span>
+          {now && <span>Sun {now.sunEl.toFixed(2)}{'\u00b0'}{now.sunUp ? '' : ' (down)'} {'\u00b7'} Earth {now.earthEl.toFixed(1)}{'\u00b0'}{now.earthUp ? '' : ' (hidden)'}{now.eclipseFrac > 0 ? ` \u00b7 eclipse ${Math.round(now.eclipseFrac * 100)}%` : ''}</span>}
+        </div>
       </div>
-      <div className="fp-count">
-        {cd && <>
-          <div className={`cd sun ${cd.sunSoon ? 'soon' : ''}`}><i />{cd.sun}</div>
-          <div className={`cd earth ${cd.earthSoon ? 'soon' : ''}`}><i />{cd.earth}</div>
-        </>}
-        <small>{fmtUTC(cursor)}</small>
-        {now && <small>Sun {now.sunEl.toFixed(2)}{'°'} {now.sunUp ? '' : '(down)'} {'·'} Earth {now.earthEl.toFixed(1)}{'°'}{now.earthUp ? '' : ' (hidden)'}{now.eclipseFrac > 0 ? ` · eclipse ${Math.round(now.eclipseFrac * 100)}%` : ''}</small>}
-      </div>
+      <div className="fp-close"><IconButton solid tip="left" icon={X} label="Close first-person view (Esc)" onClick={close} /></div>
       <div className="fp-ctl">
-        <button className="btn sm" onClick={() => now && center(now.sunAz, now.sunEl)}>Look at Sun</button>
-        <button className="btn sm" onClick={() => now && center(now.earthAz, now.earthEl)}>Look at Earth</button>
-        <div className="seg" role="group" aria-label="Vertical exaggeration">
-          <button className={vex === 1 ? 'on' : ''} onClick={() => setVex(1)}>1{'×'}</button>
-          <button className={vex === 3 ? 'on' : ''} onClick={() => setVex(3)}>3{'×'}</button>
-        </div>
-        <span className="hint">drag to look {'·'} wheel to zoom ({fov.toFixed(0)}{'°'} FOV) {'·'} scrub the timeline below</span>
+        <Button size="sm" icon={Sun} onClick={() => now && center(now.sunAz, now.sunEl)}>Look at Sun</Button>
+        <Button size="sm" icon={GlobeIcon} onClick={() => now && center(now.earthAz, now.earthEl)}>Look at Earth</Button>
+        <Segmented label="Vertical exaggeration" value={String(vex) as '1' | '3'} onChange={(v) => setVex(v === '1' ? 1 : 3)} options={[{ value: '1', label: '1\u00d7' }, { value: '3', label: '3\u00d7' }]} />
       </div>
-      {vex === 3 && <div className="fp-flag">Vertical scale exaggerated 3{'×'} (sizes of Sun and Earth stay true)</div>}
-      {!d?.horizon && <div className="fp-flag">Loading horizon{'…'}</div>}
+      <div className="fp-hint">drag to look {'\u00b7'} wheel to zoom ({fov.toFixed(0)}{'\u00b0'} FOV) {'\u00b7'} scrub the timeline below</div>
+      {vex === 3 && <div className="fp-flag"><Tag tone="warn">Vertical scale exaggerated 3{'\u00d7'} (Sun and Earth sizes stay true)</Tag></div>}
+      {!d?.horizon && <div className="fp-flag"><Tag tone="info">Loading horizon{'\u2026'}</Tag></div>}
     </div>
   );
 }

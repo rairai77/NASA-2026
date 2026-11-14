@@ -1,43 +1,58 @@
+import { CalendarClock, Play, TriangleAlert } from 'lucide-react';
 import { fmtUTC } from '../lib/time.ts';
 import { startReplay, useStore } from '../store.ts';
+import { Tag } from './ui.tsx';
 
-const KIND_LABEL: Record<string, string> = { sunset: 'sunset', sleep_before_night: 'sleep before night', anomaly: 'anomaly', crash: 'crash' };
+const KIND_LABEL: Record<string, string> = { sunset: 'Sunset', sleep_before_night: 'Slept before night', anomaly: 'Anomaly', crash: 'Crash' };
+const kindOf = (m: unknown) => (m as { end_kind?: string }).end_kind ?? '';
 
 export function ReplayTab() {
   const missions = useStore((s) => s.missions);
   const replay = useStore((s) => s.replay);
   const real = missions.filter((m) => m.landed_utc);
+  const notSunset = replay && (replay.endKind === 'anomaly' || replay.endKind === 'crash');
+  const delta = replay?.deltaH ?? null;
+  const dTone = notSunset || delta === null ? undefined : Math.abs(delta) <= 12 ? 'ok' : 'warn';
   return (
-    <div className="tab-body">
-      <p className="hint">Replay a real mission: we predict local sunset with our engine and compare with the reported end of operations.</p>
+    <div className="pn-body">
+      <div className="pn-head">
+        <h2 className="pn-h">Mission replay</h2>
+        <p className="pn-sub">Pick a real mission. We predict local sunset with our engine and compare it with the reported end of operations.</p>
+      </div>
       {replay && (
-        <div className="replay-card">
-          <b>{replay.name}</b>
-          <table className="mtable"><tbody>
-            <tr><th>Landing</th><td>{fmtUTC(replay.landed)}</td></tr>
-            <tr><th>Predicted sunset</th><td>{replay.predSunset ? fmtUTC(replay.predSunset) : 'none in window'}</td></tr>
-            <tr><th>Reported end</th><td>{replay.reportedEnd ? fmtUTC(replay.reportedEnd) : '—'}</td></tr>
-            <tr className="delta"><th>{'Δ'} (predicted {'−'} reported)</th><td>{replay.deltaH === null ? '—' : `${replay.deltaH >= 0 ? '+' : ''}${replay.deltaH.toFixed(1)} h`}</td></tr>
-          </tbody></table>
-          <p className="hint">End kind: <b>{KIND_LABEL[replay.endKind] ?? (replay.endKind || 'unknown')}</b> {'·'} {replay.source === 'live' ? 'computed live in your browser' : 'precomputed (validation run)'}</p>
-          {replay.outsideIndex && <p className="note">This mission predates the polar index (2026{'–'}2030), so no site ranking is run. The timeline shows the mission site only.</p>}
-          {replay.endKind === 'anomaly' || replay.endKind === 'crash'
-            ? <p className="note warn">Not a sunset end: {replay.endReason}. The {'Δ'} is not a prediction error.</p>
-            : <p className="note">{replay.endReason}</p>}
-        </div>
+        <section className="pn-replay" aria-live="polite">
+          <header>
+            <b>{replay.name}</b>
+            <Tag tone={notSunset ? 'warn' : undefined}>{KIND_LABEL[replay.endKind] ?? (replay.endKind || 'End')}</Tag>
+          </header>
+          <div className="pn-pvr">
+            <div><span className="pn-k">Predicted sunset</span><span className="pn-v mono">{replay.predSunset ? fmtUTC(replay.predSunset) : 'none in window'}</span></div>
+            <div><span className="pn-k">Reported end</span><span className="pn-v mono">{replay.reportedEnd ? fmtUTC(replay.reportedEnd) : '—'}</span></div>
+          </div>
+          <div className="pn-delta">
+            <span className="pn-k">{'Δ'} predicted {'−'} reported</span>
+            <span className={`pn-delta-b mono ${dTone ?? ''}`}>{delta === null ? '—' : `${delta >= 0 ? '+' : ''}${delta.toFixed(1)} h`}</span>
+          </div>
+          <p className="pn-small"><CalendarClock aria-hidden /> Landed {fmtUTC(replay.landed)} {'·'} {replay.source === 'live' ? 'computed live in your browser' : 'precomputed (validation run)'}</p>
+          {replay.outsideIndex && <p className="pn-note"><TriangleAlert aria-hidden />This mission predates the polar index (2026{'–'}2030), so no site ranking is run. The timeline shows the mission site only.</p>}
+          {notSunset
+            ? <p className="pn-note warn"><TriangleAlert aria-hidden />Not a sunset end: {replay.endReason}. The {'Δ'} is not a prediction error.</p>
+            : <p className="pn-small">{replay.endReason}</p>}
+        </section>
       )}
-      <ul className="mlist">
+      <h3 className="ui-section-title">Missions</h3>
+      <ul className="pn-mlist">
         {real.map((m) => (
-          <li key={m.id} className={replay?.id === m.id ? 'sel' : ''}>
-            <button onClick={() => startReplay(m.id)}>
-              <b>{m.name}</b>
-              <small>{m.landed_utc.slice(0, 10)} {'·'} {m.lat.toFixed(2)}{'°'}, {m.lon.toFixed(2)}{'°'}</small>
-              <span className="badge">{(m as unknown as { end_kind?: string }).end_kind ?? 'end'}</span>
+          <li key={m.id}>
+            <button className={`pn-mission ${replay?.id === m.id ? 'is-sel' : ''}`} onClick={() => startReplay(m.id)}>
+              <span className="pn-mission-t"><b>{m.name}</b><small className="mono">{m.landed_utc.slice(0, 10)} {'·'} {m.lat.toFixed(2)}{'°'}, {m.lon.toFixed(2)}{'°'}</small></span>
+              <Tag tone={['anomaly', 'crash'].includes(kindOf(m)) ? 'warn' : undefined}>{KIND_LABEL[kindOf(m)] ?? (kindOf(m) || 'end')}</Tag>
+              <Play aria-hidden className="pn-mission-go" />
             </button>
           </li>
         ))}
       </ul>
-      {real.length === 0 && <p className="empty">No missions loaded.</p>}
+      {real.length === 0 && <p className="pn-hint">No missions loaded.</p>}
     </div>
   );
 }

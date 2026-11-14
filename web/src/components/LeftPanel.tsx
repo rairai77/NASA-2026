@@ -1,16 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { Check, ChevronDown, ChevronRight, CircleDashed, GitCompare, History, Info, Layers, ListOrdered, MapPin, Plus, Search, SearchX, Spline, Sun } from 'lucide-react';
 import type { VisResult } from '../engine/api.ts';
 import { getEngine } from '../engine/client.ts';
-import { fmtMetric, metricLabel } from '../query/metrics.ts';
-import { MAX_COMPARE, flyTo, select, setLayerState, toggleCompare, useStore, windowOf, type LeftTab, type Target } from '../store.ts';
+import { placeFor } from '../lib/places.ts';
+import { METRIC_BY_NAME, metricLabel } from '../query/metrics.ts';
+import { describeRegion } from '../query/query.ts';
+import { MAX_COMPARE, flyTo, patchQuery, runRank, select, setLayerState, toggleCompare, useStore, windowOf, type LeftTab, type Target } from '../store.ts';
 import { DiffTab } from './DiffTab.tsx';
+import { LaneStrip } from './LaneStrip.tsx';
 import { ReplayTab } from './ReplayTab.tsx';
-import { Badge, Why } from './ui.tsx';
+import { Button, IconButton, Skeleton, Stat, Tabs, Tag, Tooltip, Why } from './ui.tsx';
 
 export const COLORS = { sun: '#F5B700', earth: '#4FA3FF', both: '#FFFFFF', eclipse: '#FF4FD8' };
 
 const sparkCache = new Map<string, Promise<VisResult>>();
-function useSpark(t: Target | undefined, win: [number, number]) {
+export function useSpark(t: Target | undefined, win: [number, number]) {
   const [v, setV] = useState<VisResult | null>(null);
   useEffect(() => {
     if (!t) return;
@@ -28,104 +32,151 @@ function useSpark(t: Target | undefined, win: [number, number]) {
   return v;
 }
 
-export function Sparkline({ target, win }: { target: Target; win: [number, number] }) {
-  const v = useSpark(target, win);
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const c = ref.current;
-    if (!c) return;
-    const dpr = window.devicePixelRatio || 1;
-    const W = 140, H = 22;
-    c.width = W * dpr; c.height = H * dpr;
-    const g = c.getContext('2d')!;
-    g.scale(dpr, dpr);
-    g.clearRect(0, 0, W, H);
-    g.fillStyle = 'rgba(255,255,255,0.05)';
-    g.fillRect(0, 0, W, H);
-    if (!v) return;
-    const n = v.t.length;
-    for (let x = 0; x < W; x++) {
-      const a = Math.floor((x / W) * n), b = Math.max(a + 1, Math.floor(((x + 1) / W) * n));
-      let su = 0, ea = 0, bo = 0;
-      for (let i = a; i < b; i++) { const s = v.sunFrac[i] >= 0.5, e = v.earthUp[i] === 1; if (s) su++; if (e) ea++; if (s && e) bo++; }
-      const m = b - a;
-      g.globalAlpha = su / m; g.fillStyle = COLORS.sun; g.fillRect(x, 1, 1, 8);
-      g.globalAlpha = ea / m; g.fillStyle = COLORS.earth; g.fillRect(x, 10, 1, 7);
-      g.globalAlpha = bo / m; g.fillStyle = COLORS.both; g.fillRect(x, 18, 1, 3);
-    }
-    g.globalAlpha = 1;
-  }, [v]);
-  return <canvas ref={ref} className="spark" style={{ width: 140, height: 22 }} aria-label="Sun and Earth visibility over the window" />;
-}
-
-function CompareCheck({ id }: { id: string }) {
+/** Add to / remove from the timeline (the compare list). */
+export function TimelineToggle({ id, size = 'sm' }: { id: string; size?: 'sm' | 'md' }) {
   const on = useStore((s) => s.compare.includes(id));
   const full = useStore((s) => s.compare.length >= MAX_COMPARE);
+  const label = on ? 'Remove from timeline' : full ? `Timeline is full (${MAX_COMPARE} sites)` : 'Add to timeline';
   return (
-    <label className="cmp" title={on ? 'Remove from compare' : full ? 'Compare is full (4)' : 'Add to compare'} onClick={(e) => e.stopPropagation()}>
-      <input type="checkbox" checked={on} onChange={() => toggleCompare(id)} aria-label="Compare" />
-    </label>
+    <span onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+      <IconButton icon={on ? Check : Plus} label={label} size={size} active={on} tip="left" className="pn-add" onClick={() => toggleCompare(id)} />
+    </span>
+  );
+}
+
+const SHORT: Record<string, string> = {
+  sun_hours: 'Sun', earth_hours: 'Earth', both_hours: 'Sun + Earth', longest_sun_h: 'Longest Sun', longest_both_h: 'Longest both', longest_dark_h: 'Longest dark',
+  longest_earth_h: 'Longest Earth', comms_hours: 'Comms', slope_deg: 'Slope', sun_frac: 'Sun share', mean_sun_el_deg: 'Mean Sun el.', energy_wh: 'Energy', battery_wh_needed: 'Battery',
+  eclipse_hours: 'Eclipse', elev_m: 'Elevation', psr_dist_km: 'To PSR', fault_dist_km: 'To fault', longest_comms_h: 'Longest comms', min_sun_el_deg: 'Min Sun el.',
+};
+function statValue(name: string, v: number | undefined): { value: string; unit: string } {
+  const m = METRIC_BY_NAME[name];
+  if (v === undefined || v === null || Number.isNaN(v)) return { value: '—', unit: '' };
+  const u = m?.unit ?? '';
+  return { value: v.toFixed(m?.digits ?? 1), unit: u };
+}
+const toneOf = (name: string): 'sun' | 'earth' | 'ok' | undefined => (/^(sun|longest_sun|mean_sun|min_sun)/.test(name) ? 'sun' : /earth|comms|both/.test(name) ? 'earth' : 'ok');
+
+function regionLabel(q: ReturnType<typeof useStore.getState>['query']): string {
+  const r = q.region;
+  if (r.type === 'polar') return r.max_lat <= -85 || r.min_lat < 0 ? `South polar cap ${Math.abs(r.max_lat)}–${Math.abs(r.min_lat)}° S` : describeRegion(r);
+  const d = describeRegion(r);
+  return d.charAt(0).toUpperCase() + d.slice(1);
+}
+
+function ResultCard({ id, rank, coarse, cols, win }: { id: string; rank: number; coarse?: boolean; cols: string[]; win: [number, number] }) {
+  const t = useStore((s) => s.targets[id]);
+  const sites = useStore((s) => s.sites);
+  const selected = useStore((s) => s.selected === id);
+  const edu = useStore((s) => s.educator);
+  const vis = useSpark(t, win);
+  const place = useMemo(() => (t ? (t.kind === 'site' ? null : placeFor(t.lat, t.lon, sites)) : null), [t, sites]);
+  if (!t) return null;
+  const choose = () => { select(id); flyTo(id); };
+  return (
+    <li
+      className={`pn-card ${selected ? 'is-sel' : ''}`} tabIndex={0} role="button" aria-pressed={selected}
+      aria-label={`Rank ${rank}, ${place?.title ?? t.name}`}
+      onClick={choose}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(); } }}
+      onMouseEnter={() => useStore.setState({ hoveredId: id })} onMouseLeave={() => useStore.setState({ hoveredId: null })}
+      onFocus={() => useStore.setState({ hoveredId: id })} onBlur={() => useStore.setState({ hoveredId: null })}
+    >
+      <div className="pn-card-top">
+        <span className={`pn-rank ${rank === 1 ? 'is-gold' : ''}`} aria-hidden>{rank}</span>
+        <div className="pn-card-title">
+          <b title={place?.title ?? t.name}>{place?.title ?? t.name}</b>
+          <span className="mono">{place?.distLabel && <span className="pn-dist">{place.distLabel} · </span>}{t.lat.toFixed(3)}°, {t.lon.toFixed(3)}°{coarse && <em title="Found on the coarse 10 km global grid"> · coarse 10 km</em>}</span>
+        </div>
+        <TimelineToggle id={id} />
+      </div>
+      <div className="pn-stats">
+        {cols.map((c, i) => {
+          const sv = statValue(c, t.metrics?.[c]);
+          return <Stat key={c} label={SHORT[c] ?? metricLabel(c, edu)} value={sv.value} unit={sv.unit} tone={i === 0 ? toneOf(c) : undefined} title={metricLabel(c, edu)} />;
+        })}
+      </div>
+      <LaneStrip vis={vis} win={win} />
+    </li>
   );
 }
 
 function ResultsTab() {
   const results = useStore((s) => s.results);
   const q = useStore((s) => s.query);
-  const targets = useStore((s) => s.targets);
-  const selected = useStore((s) => s.selected);
   const ranking = useStore((s) => s.ranking);
   const progress = useStore((s) => s.progress);
-  const edu = useStore((s) => s.educator);
   const win = useMemo(() => windowOf(q), [q]);
   const cols = useMemo(() => {
     const names = [...q.objectives.map((o) => o.metric), ...q.filters.map((f) => f.metric)];
     const u = [...new Set(names)];
-    for (const extra of ['slope_deg', 'longest_both_h']) if (u.length < 3 && !u.includes(extra)) u.push(extra);
+    for (const extra of ['sun_hours', 'earth_hours', 'longest_both_h', 'slope_deg']) if (u.length < 3 && !u.includes(extra)) u.push(extra);
     return u.slice(0, 3);
   }, [q]);
-  return (
-    <div className="tab-body">
-      {ranking && (
-        <div className="progress" role="progressbar">
-          <div className="bar" style={{ width: `${progress ? Math.min(100, (100 * progress.done) / Math.max(1, progress.total)) : 5}%` }} />
-          <span>{progress?.stage ?? 'Ranking'}{'…'}</span>
+
+  if (ranking) {
+    const pct = progress ? Math.min(100, (100 * progress.done) / Math.max(1, progress.total)) : 4;
+    return (
+      <div className="pn-body" aria-busy="true">
+        <div className="pn-head">
+          <h2 className="pn-h">Ranking sites</h2>
+          <p className="pn-sub">{progress?.stage ?? 'Starting'}{'…'} <span className="mono">{Math.round(pct)}%</span></p>
+          <div className="pn-bar" role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${pct}%` }} /></div>
         </div>
-      )}
-      {results && !ranking && results.coarse && (
-        <div className="coarse-banner" role="note">
-          <Badge tone="warn" title="Global search uses ~10 km cells, 6-hour steps and 1 km-baseline slopes">coarse {Math.round(results.resolutionM / 1000)} km screening</Badge>
-          <small>Not 20 m answers. Use these as leads: select one, then inspect its horizon and timeline, or search a polar region for 20 m results.</small>
-        </div>
-      )}
-      {results && !ranking && (
-        <p className="summary">{results.passedFilters.toLocaleString()} of {results.considered.toLocaleString()} {results.considered > results.results.length ? 'cells' : 'candidates'} pass your filters
-          {' · '}{results.coarse ? `~${Math.round(results.resolutionM / 1000)} km cells (coarse)` : results.resolutionM >= 1000 ? `${results.resolutionM / 1000} km grid, best ${results.results.length} refined at 15 min` : `${results.resolutionM} m terrain`}{results.model === 'mock' ? ' (demo)' : ''}</p>
-      )}
-      {results && results.results.length === 0 && !ranking && <p className="empty">No site passes all filters in this window. Relax a filter chip or move the window.</p>}
-      <ol className="reslist">
-        {results?.results.map((r) => {
-          const id = r.id ?? `r:${r.lat.toFixed(4)},${r.lon.toFixed(4)}`;
-          const t = targets[id];
-          if (!t) return null;
-          return (
-            <li key={id} className={selected === id ? 'sel' : ''} onClick={() => { select(id); flyTo(id); }}>
-              <div className="r-top">
-                <span className="rank">{r.rank}</span>
-                <div className="r-name">
-                  <b>{t.name}</b>
-                  <small>{r.lat.toFixed(3)}{'°'}, {r.lon.toFixed(3)}{'°'}{r.coarse ? <span className="coarse-tag" title="Found on the coarse 10 km global grid"> {'·'} coarse 10 km</span> : null}</small>
-                </div>
-                <CompareCheck id={id} />
-              </div>
-              <div className="r-metrics">
-                {cols.map((c) => <span key={c} title={metricLabel(c, edu)}><i>{metricLabel(c, edu)}</i>{fmtMetric(c, r.metrics[c]).replace(/ \(.*\)/, '')}</span>)}
-              </div>
-              <Sparkline target={t} win={win} />
+        <ol className="pn-list">
+          {[0, 1, 2].map((i) => (
+            <li key={i} className="pn-card pn-card--skel" aria-hidden>
+              <div className="pn-card-top"><Skeleton w={24} h={24} /><div className="pn-card-title"><Skeleton w="70%" h={14} /><Skeleton w="45%" h={11} /></div></div>
+              <div className="pn-stats"><Skeleton h={30} /><Skeleton h={30} /><Skeleton h={30} /></div>
+              <Skeleton h={30} />
             </li>
-          );
+          ))}
+        </ol>
+      </div>
+    );
+  }
+
+  if (!results || results.results.length === 0) {
+    const last = q.filters[q.filters.length - 1];
+    return (
+      <div className="pn-body">
+        <div className="pn-empty">
+          <span className="pn-empty-ic">{results ? <SearchX aria-hidden /> : <Search aria-hidden />}</span>
+          <b>{results ? 'No site passes all filters' : 'No ranking yet'}</b>
+          <p>{results ? 'Nothing in this window and region meets every filter. Relax one, widen the region or move the window.' : 'Ask a question in the bar above, or run the current query.'}</p>
+          {results && last
+            ? <Button variant="primary" size="sm" icon={SearchX} onClick={() => patchQuery({ filters: q.filters.slice(0, -1) })}>Drop “{metricLabel(last.metric)}” filter</Button>
+            : <Button variant="primary" size="sm" icon={Search} onClick={() => runRank()}>Run search</Button>}
+        </div>
+      </div>
+    );
+  }
+
+  const n = results.results.length;
+  const res = results.resolutionM;
+  const grid = results.coarse ? `~${Math.round(res / 1000)} km cells (coarse)` : res >= 1000 ? `${res / 1000} km grid` : `${res} m terrain`;
+  const refine = results.coarse ? '6 h steps' : `refined at 15 min`;
+  return (
+    <div className="pn-body">
+      <div className="pn-head">
+        <h2 className="pn-h" title={`${results.considered.toLocaleString()} cells considered, ${results.passedFilters.toLocaleString()} pass your filters`}>
+          Best {n} of {results.passedFilters.toLocaleString()} {results.considered > n ? 'cells' : 'candidates'}
+        </h2>
+        <p className="pn-sub">{regionLabel(q)} {'·'} {grid} {'·'} {refine}{results.model === 'mock' ? ' · demo' : ''}</p>
+      </div>
+      {results.coarse && (
+        <div className="pn-warn" role="note">
+          <Tag tone="warn" title="Global search uses ~10 km cells, 6-hour steps and 1 km-baseline slopes">Coarse {Math.round(res / 1000)} km screening</Tag>
+          <p>Not 20 m answers. Use these as leads: select one, then inspect its horizon and timeline, or search a polar region for 20 m results.</p>
+        </div>
+      )}
+      <ol className="pn-list">
+        {results.results.map((r) => {
+          const id = r.id ?? `r:${r.lat.toFixed(4)},${r.lon.toFixed(4)}`;
+          return <ResultCard key={id} id={id} rank={r.rank} coarse={r.coarse} cols={cols} win={win} />;
         })}
       </ol>
-      <div className="legend"><i style={{ background: COLORS.sun }} />Sun <i style={{ background: COLORS.earth }} />Earth <i style={{ background: COLORS.both }} />both</div>
+      <div className="pn-legend"><i style={{ background: COLORS.sun }} />Sun <i style={{ background: COLORS.earth }} />Earth <i style={{ background: COLORS.both }} />both up <span>{'·'} tick = timeline cursor</span></div>
     </div>
   );
 }
@@ -145,29 +196,44 @@ function SitesTab() {
     return [...g.entries()];
   }, [sites, filter]);
   return (
-    <div className="tab-body">
-      <input className="txt" placeholder="Search sites…" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Search sites" />
-      <p className="hint">Tick up to {MAX_COMPARE} sites to compare them on one timeline.</p>
+    <div className="pn-body">
+      <label className="pn-search">
+        <Search aria-hidden />
+        <input type="search" placeholder="Search sites" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Search sites" />
+      </label>
+      <p className="pn-hint">Use <Plus aria-hidden className="pn-inline-ic" /> to put up to {MAX_COMPARE} sites on one timeline.</p>
       {groups.map(([g, list]) => (
-        <section key={g} className="group">
-          <button className="group-h" onClick={() => setClosed({ ...closed, [g]: !closed[g] })} aria-expanded={!closed[g]}>
-            <span>{closed[g] ? '▸' : '▾'} {g}</span><small>{list.length}</small>
+        <section key={g} className="pn-group">
+          <button className="pn-group-h" onClick={() => setClosed({ ...closed, [g]: !closed[g] })} aria-expanded={!closed[g]}>
+            {closed[g] ? <ChevronRight aria-hidden /> : <ChevronDown aria-hidden />}<span>{g}</span><small>{list.length}</small>
           </button>
           {!closed[g] && (
             <ul>
               {list.map((s) => (
-                <li key={s.id} className={selected === s.id ? 'sel' : ''} onClick={() => { select(s.id); flyTo(s.id); }}>
-                  <span className="s-name">{s.name}</span>
-                  {s.representative && <Badge title="A single point stands in for a larger region">rep.</Badge>}
-                  <CompareCheck id={s.id} />
+                <li key={s.id} className={`pn-row ${selected === s.id ? 'is-sel' : ''}`} tabIndex={0}
+                  onClick={() => { select(s.id); flyTo(s.id); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { select(s.id); flyTo(s.id); } }}
+                  onMouseEnter={() => useStore.setState({ hoveredId: s.id })} onMouseLeave={() => useStore.setState({ hoveredId: null })}>
+                  <span className="pn-row-name">{s.name}</span>
+                  {s.representative && <Tag title="A single point stands in for a larger region">rep.</Tag>}
+                  <TimelineToggle id={s.id} />
                 </li>
               ))}
             </ul>
           )}
         </section>
       ))}
-      {groups.length === 0 && <p className="empty">No sites match.</p>}
+      {groups.length === 0 && <p className="pn-hint">No sites match “{filter}”.</p>}
     </div>
+  );
+}
+
+function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+  return (
+    <label className="pn-switch">
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} aria-label={label} />
+      <span aria-hidden />
+    </label>
   );
 }
 
@@ -176,72 +242,99 @@ function LayersTab() {
   const defs = useStore((s) => s.layerDefs);
   const lstate = useStore((s) => s.layerState);
   const set = (p: Partial<typeof layers>) => useStore.setState({ layers: { ...layers, ...p } });
-  const Toggle = ({ k, label, hint }: { k: 'sites' | 'results' | 'faults' | 'keepout' | 'shadows'; label: string; hint?: React.ReactNode }) => (
-    <label className="layer">
-      <input type="checkbox" checked={layers[k]} onChange={(e) => set({ [k]: e.target.checked })} />
-      <span>{label}{hint}</span>
-    </label>
-  );
+  const rows: { k: 'sites' | 'results' | 'faults' | 'keepout' | 'shadows'; label: string; icon: typeof Sun; why?: string }[] = [
+    { k: 'sites', label: 'Curated sites', icon: MapPin },
+    { k: 'results', label: 'Ranked results', icon: ListOrdered },
+    { k: 'shadows', label: 'Terrain-true shadows (LOLA)', icon: Sun, why: 'shadows' },
+    { k: 'faults', label: 'Fault scarps', icon: Spline, why: 'lobate-scarps' },
+    { k: 'keepout', label: 'Keep-out circles around landers', icon: CircleDashed },
+  ];
   return (
-    <div className="tab-body">
-      <Toggle k="sites" label="Curated sites" />
-      <Toggle k="results" label="Ranked results" />
-      <Toggle k="faults" label="Fault scarps" hint={<Why id="lobate-scarps" />} />
-      <Toggle k="shadows" label="Terrain-true shadows (LOLA)" hint={<Why id="shadows" />} />
-      <Toggle k="keepout" label="Keep-out circles around landers" />
-      <div className="slider">
-        <label>Radius <b>{layers.keepoutKm} km</b>
-          <input type="range" min={0.5} max={50} step={0.5} value={layers.keepoutKm} onChange={(e) => set({ keepoutKm: parseFloat(e.target.value) })} />
-        </label>
-      </div>
-      <h4 className="subhead">Context layers</h4>
-      {defs.length === 0 && <p className="hint">No layer tiles found in /data/layers yet.</p>}
-      {defs.map((d) => {
-        const st = lstate[d.id] ?? { on: false, opacity: 1 };
-        const stops = d.legend.stops;
-        const span = d.legend.max - d.legend.min || 1;
-        const grad = stops.length > 1
-          ? `linear-gradient(90deg, ${stops.map(([v, c]) => `${c} ${Math.max(0, Math.min(100, ((v - d.legend.min) / span) * 100))}%`).join(', ')})`
-          : stops[0]?.[1] ?? '#22d3ee';
-        return (
-          <div key={d.id} className="lcard">
-            <label className="layer">
-              <input type="checkbox" checked={st.on} onChange={(e) => setLayerState(d.id, { on: e.target.checked })} />
-              <span>{d.title}{d.id === 'psr' && <Why id="psr" />}</span>
-            </label>
-            {st.on && (
-              <>
-                <div className="legendbar" style={{ background: grad }} />
-                <div className="legendlbl"><span>{d.legend.min}{d.units && d.units !== 'mask' ? ` ${d.units}` : ''}</span><span>{d.units === 'mask' ? 'mask' : d.legend.max}</span></div>
-                <label className="opac">opacity<input type="range" min={0.1} max={1} step={0.05} value={st.opacity} onChange={(e) => setLayerState(d.id, { opacity: parseFloat(e.target.value) })} /></label>
-                <small className="hint" title={d.citation}>{d.source}</small>
-              </>
+    <div className="pn-body">
+      <h3 className="ui-section-title">Map overlays</h3>
+      <div className="pn-stack">
+        {rows.map((r) => (
+          <div key={r.k} className="pn-lrow-wrap">
+            <div className="pn-lrow">
+              <r.icon aria-hidden className="pn-lrow-ic" />
+              <span className="pn-lrow-t">{r.label}{r.why && <Why id={r.why} />}</span>
+              <Switch checked={layers[r.k]} onChange={(v) => set({ [r.k]: v })} label={r.label} />
+            </div>
+            {r.k === 'keepout' && layers.keepout && (
+              <label className="pn-slider">
+                <span>Radius</span>
+                <input type="range" min={0.5} max={50} step={0.5} value={layers.keepoutKm} onChange={(e) => set({ keepoutKm: parseFloat(e.target.value) })} />
+                <b className="mono">{layers.keepoutKm} km</b>
+              </label>
             )}
           </div>
-        );
-      })}
+        ))}
+      </div>
+      <h3 className="ui-section-title">Context layers</h3>
+      {defs.length === 0 && <p className="pn-hint">No layer tiles found in /data/layers yet.</p>}
+      <div className="pn-stack">
+        {defs.map((d) => {
+          const st = lstate[d.id] ?? { on: false, opacity: 1 };
+          const stops = d.legend.stops;
+          const span = d.legend.max - d.legend.min || 1;
+          const grad = stops.length > 1
+            ? `linear-gradient(90deg, ${stops.map(([v, c]) => `${c} ${Math.max(0, Math.min(100, ((v - d.legend.min) / span) * 100))}%`).join(', ')})`
+            : stops[0]?.[1] ?? '#22d3ee';
+          return (
+            <div key={d.id} className={`pn-lcard ${st.on ? 'is-on' : ''}`}>
+              <div className="pn-lrow">
+                <Layers aria-hidden className="pn-lrow-ic" />
+                <span className="pn-lrow-t">{d.title}{d.id === 'psr' && <Why id="psr" />}</span>
+                <Tooltip content={<>{d.source}{d.citation && <><br /><br />{d.citation}</>}</>} side="left" wrap>
+                  <button className="ui-icon-btn ui-icon-btn--sm" aria-label={`Source: ${d.source}`}><Info aria-hidden /></button>
+                </Tooltip>
+                <Switch checked={st.on} onChange={(v) => setLayerState(d.id, { on: v })} label={d.title} />
+              </div>
+              {st.on && (
+                <div className="pn-lbody">
+                  <div className="pn-legendbar" style={{ background: grad }} />
+                  <div className="pn-legendlbl mono"><span>{d.legend.min}{d.units && d.units !== 'mask' ? ` ${d.units}` : ''}</span><span>{d.units === 'mask' ? 'mask' : `${d.legend.max}${d.units ? ` ${d.units}` : ''}`}</span></div>
+                  <label className="pn-slider">
+                    <span>Opacity</span>
+                    <input type="range" min={0.1} max={1} step={0.05} value={st.opacity} onChange={(e) => setLayerState(d.id, { opacity: parseFloat(e.target.value) })} />
+                    <b className="mono">{Math.round(st.opacity * 100)}%</b>
+                  </label>
+                  <small className="pn-src">{d.source}</small>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
 export function LeftPanel() {
   const tab = useStore((s) => s.leftTab);
-  const nCmp = useStore((s) => s.compare.length);
-  const tabs: [LeftTab, string][] = [['results', 'Results'], ['sites', 'Sites'], ['layers', 'Layers'], ['replay', 'Replay'], ['diff', 'Diff']];
+  const nRes = useStore((s) => s.results?.results.length ?? 0);
+  const nSites = useStore((s) => s.sites.length);
+  const layers = useStore((s) => s.layers);
+  const lstate = useStore((s) => s.layerState);
+  const nLayers = Object.values(layers).filter((v) => v === true).length + Object.values(lstate).filter((l) => l.on).length;
+  const L = (text: string) => <span className="pn-tl">{text}</span>;
+  const tabs: { id: LeftTab; label: React.ReactNode; icon: typeof Layers; count?: number; title: string }[] = [
+    { id: 'results', label: L('Results'), icon: ListOrdered, count: nRes || undefined, title: 'Results: ranked sites' },
+    { id: 'sites', label: L('Sites'), icon: MapPin, count: nSites || undefined, title: 'Sites: curated landing sites' },
+    { id: 'layers', label: L('Layers'), icon: Layers, count: nLayers || undefined, title: 'Layers: map overlays' },
+    { id: 'replay', label: L('Replay'), icon: History, title: 'Replay: real missions vs our prediction' },
+    { id: 'diff', label: L('Scenarios'), icon: GitCompare, title: 'Scenarios: compare A and B' },
+  ];
   return (
-    <aside className="left">
-      <div className="tabs" role="tablist">
-        {tabs.map(([k, label]) => (
-          <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? 'on' : ''} onClick={() => useStore.setState({ leftTab: k })}>
-            {label}{k === 'sites' && nCmp > 0 ? <span className="count">{nCmp}</span> : null}
-          </button>
-        ))}
+    <aside className="left pn-left" aria-label="Sites and results">
+      <Tabs className="pn-tabs" tabs={tabs} active={tab} onChange={(k) => useStore.setState({ leftTab: k })} />
+      <div className="pn-scroll" role="tabpanel">
+        {tab === 'results' && <ResultsTab />}
+        {tab === 'sites' && <SitesTab />}
+        {tab === 'layers' && <LayersTab />}
+        {tab === 'replay' && <ReplayTab />}
+        {tab === 'diff' && <DiffTab />}
       </div>
-      {tab === 'results' && <ResultsTab />}
-      {tab === 'sites' && <SitesTab />}
-      {tab === 'layers' && <LayersTab />}
-      {tab === 'replay' && <ReplayTab />}
-      {tab === 'diff' && <DiffTab />}
     </aside>
   );
 }

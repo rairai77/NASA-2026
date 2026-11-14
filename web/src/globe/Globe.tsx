@@ -4,7 +4,7 @@ import {
   BillboardGraphics, BoundingSphere, Cartesian2, Cartesian3, Color, ConstantPositionProperty, CustomDataSource, DirectionalLight,
   Ellipsoid, Entity, GeographicTilingScheme, HeadingPitchRange, HorizontalOrigin, Math as CMath, NearFarScalar,
   ScreenSpaceEventHandler, ScreenSpaceEventType, SingleTileImageryProvider, UrlTemplateImageryProvider, VerticalOrigin, Viewer,
-  ImageryLayer, type ImageryProvider, Rectangle, HeightReference, ColorMaterialProperty, DistanceDisplayCondition, LabelStyle,
+  ImageryLayer, type ImageryProvider, Rectangle, Matrix4, HeightReference, ColorMaterialProperty, DistanceDisplayCondition, LabelStyle,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { getEngine } from '../engine/client.ts';
@@ -14,6 +14,10 @@ import { installTraverseLayer } from './traverseLayer.ts';
 import { ShadowImageryProvider } from './shadowProvider.ts';
 import type { ShadowPatch } from '../engine/api.ts';
 import { makeMoonCanvas } from './moonTexture.ts';
+import { Crosshair, House, Layers as LayersIcon, Mountain, Sun } from 'lucide-react';
+import { IconButton, Spinner, Tag } from '../components/ui.tsx';
+import { METRIC_BY_NAME } from '../query/metrics.ts';
+import { placeFor, shortName } from '../lib/places.ts';
 
 const MOON = Ellipsoid.MOON;
 const LOCAL_KM = 60;
@@ -30,33 +34,46 @@ export function getCameraState() { return latestCam; }
 const r3 = (v: Cartesian3) => [v.x, v.y, v.z].map((x) => Math.round(x));
 const r4 = (v: Cartesian3) => [v.x, v.y, v.z].map((x) => Math.round(x * 1e5) / 1e5);
 
-// Exactly-nadir cameras make Cesium's depth plane normalise a zero vector; offset by a metre.
-function poleCam() { return new Cartesian3(1, 1, -(MOON.maximumRadius + 2.1e6)); }
+// Default / "Pole view": an oblique look over the south pole (never exactly nadir, which degenerates Cesium's depth plane).
+// Range and pitch keep the camera above the 350 km "local" threshold so the 650 km regional shadow patch is used.
+const POLE_VIEW = { heading: CMath.toRadians(20), pitch: CMath.toRadians(-48), range: 5.2e5 };
+const poleTarget = () => Cartesian3.fromDegrees(0, -90, 0, MOON);
+function poleOffset() { return new HeadingPitchRange(POLE_VIEW.heading, POLE_VIEW.pitch, POLE_VIEW.range); }
+function setPoleView(viewer: Viewer) {
+  viewer.camera.lookAt(poleTarget(), poleOffset());
+  viewer.camera.lookAtTransform(Matrix4.IDENTITY);
+}
+const RELIEF_STEPS = [1, 2, 4];
 
 function pos(lat: number, lon: number, h = 0) { return Cartesian3.fromDegrees(lon, lat, h, MOON); }
 
-function numberedPin(n: number, selected: boolean): HTMLCanvasElement {
-  const c = document.createElement('canvas');
-  c.width = c.height = 56;
-  const g = c.getContext('2d')!;
-  g.beginPath(); g.arc(28, 28, 22, 0, 7);
-  g.fillStyle = selected ? '#FFFFFF' : '#10141c'; g.fill();
-  g.lineWidth = 4; g.strokeStyle = selected ? '#F5B700' : '#8fb4ff'; g.stroke();
-  g.fillStyle = selected ? '#10141c' : '#ffffff';
-  g.font = '700 26px ui-sans-serif, system-ui, sans-serif';
-  g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.fillText(String(n), 28, 29);
-  return c;
-}
-
-function ringCanvas(): HTMLCanvasElement {
+const GOLD = '#f5c542';
+function numberedPin(n: number, selected: boolean, hovered: boolean): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width = c.height = 64;
   const g = c.getContext('2d')!;
-  g.beginPath(); g.arc(32, 32, 26, 0, 7);
-  g.lineWidth = 7; g.strokeStyle = 'rgba(16,20,28,0.85)'; g.stroke();
-  g.beginPath(); g.arc(32, 32, 26, 0, 7);
-  g.lineWidth = 4; g.strokeStyle = '#F5B700'; g.stroke();
+  const gold = n === 1;
+  g.beginPath(); g.arc(32, 32, 24, 0, 7);
+  g.shadowColor = 'rgba(0,0,0,0.55)'; g.shadowBlur = 6; g.shadowOffsetY = 1;
+  g.fillStyle = gold ? GOLD : '#f1f4f9'; g.fill();
+  g.shadowColor = 'transparent';
+  g.lineWidth = 3; g.strokeStyle = selected ? GOLD : hovered ? '#ffffff' : 'rgba(10,13,19,0.9)'; g.stroke();
+  if (selected) { g.beginPath(); g.arc(32, 32, 28.5, 0, 7); g.lineWidth = 3; g.strokeStyle = GOLD; g.stroke(); }
+  g.fillStyle = '#10141c';
+  g.font = '700 27px "Inter Variable", Inter, ui-sans-serif, system-ui, sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(String(n), 32, 33);
+  return c;
+}
+
+function ringCanvas(color = GOLD): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d')!;
+  g.beginPath(); g.arc(32, 32, 27, 0, 7);
+  g.lineWidth = 7; g.strokeStyle = 'rgba(10,13,19,0.7)'; g.stroke();
+  g.beginPath(); g.arc(32, 32, 27, 0, 7);
+  g.lineWidth = 3.5; g.strokeStyle = color; g.stroke();
   return c;
 }
 
@@ -90,6 +107,9 @@ export default function Globe() {
   const skyRef = useRef<{ sun: Entity; earth: Entity } | null>(null);
   const [hover, setHover] = useState<Hover | null>(null);
   const [ready, setReady] = useState(false);
+  const [shadowBusy, setShadowBusy] = useState(false);
+  const hoveredId = useStore((s) => s.hoveredId);
+  const query = useStore((s) => s.query);
   const targets = useStore((s) => s.targets);
   const sites = useStore((s) => s.sites);
   const results = useStore((s) => s.results);
@@ -102,7 +122,6 @@ export default function Globe() {
   const layerDefs = useStore((st) => st.layerDefs);
   const layerState = useStore((st) => st.layerState);
   const exaggeration = useStore((st) => st.exaggeration);
-  const mode = useStore((st) => st.info?.mode);
   const imgLayers = useRef<Record<string, ImageryLayer>>({});
   const shadowLayer = useRef<ImageryLayer | null>(null);
   const [regime, setRegime] = useState<'regional' | 'local'>('regional');
@@ -187,7 +206,7 @@ export default function Globe() {
     if (cam) {
       viewer.camera.setView({ destination: new Cartesian3(cam.p[0] + 1, cam.p[1] + 1, cam.p[2]), orientation: { direction: new Cartesian3(...cam.d), up: new Cartesian3(...cam.u) } });
     } else {
-      viewer.camera.setView({ destination: poleCam(), orientation: { heading: 0, pitch: -CMath.PI_OVER_TWO, roll: 0 } });
+      setPoleView(viewer);
     }
     viewer.camera.percentageChanged = 0.005;
     const updCam = () => {
@@ -205,11 +224,21 @@ export default function Globe() {
       const id = o?.id;
       return id instanceof Entity && typeof id.id === 'string' && !['sun', 'earth'].includes(id.id) && id.name !== 'sel' ? id.id.replace(/^res:/, '') : null;
     };
-    handler.setInputAction((m: { endPosition: Cartesian2 }) => {
-      const id = pickId(m.endPosition);
+    let lastPick = 0, pendingMove: ReturnType<typeof setTimeout> | null = null;
+    const onMove = (p: Cartesian2) => {
+      const id = pickId(p);
       scene.canvas.style.cursor = id ? 'pointer' : '';
-      setHover((h) => (id ? { id, x: m.endPosition.x, y: m.endPosition.y } : h ? null : h));
+      setHover((h) => (id ? { id, x: p.x, y: p.y } : h ? null : h));
+    };
+    handler.setInputAction((m: { endPosition: Cartesian2 }) => {
+      const p = Cartesian2.clone(m.endPosition);
+      const wait = 70 - (performance.now() - lastPick);
+      if (pendingMove) clearTimeout(pendingMove);
+      if (wait <= 0) { lastPick = performance.now(); onMove(p); pendingMove = null; }
+      else pendingMove = setTimeout(() => { lastPick = performance.now(); pendingMove = null; onMove(p); }, wait);
     }, ScreenSpaceEventType.MOUSE_MOVE);
+    const onLeave = () => { if (pendingMove) clearTimeout(pendingMove); setHover(null); };
+    scene.canvas.addEventListener('mouseleave', onLeave);
     handler.setInputAction((m: { position: Cartesian2 }) => {
       const id = pickId(m.position);
       if (id) select(id);
@@ -219,7 +248,7 @@ export default function Globe() {
     ro.observe(host);
     setReady(true);
     return () => {
-      ro.disconnect(); handler.destroy(); disposeTraverse(); viewer.destroy(); viewerRef.current = null; setReady(false);
+      ro.disconnect(); scene.canvas.removeEventListener('mouseleave', onLeave); if (pendingMove) clearTimeout(pendingMove); handler.destroy(); disposeTraverse(); viewer.destroy(); viewerRef.current = null; setReady(false);
     };
   }, []);
 
@@ -230,26 +259,17 @@ export default function Globe() {
     if (!ds || !viewer) return;
     ds.entities.removeAll();
     if (layers.sites) {
-      const selT = selected ? useStore.getState().targets[selected] : undefined;
       const ranked = new Set((layers.results && results ? results.results : []).map((r) => r.id).filter(Boolean));
       for (const s of sites) {
         if (ranked.has(s.id)) continue; // drawn as a numbered pin instead
         ds.entities.add({
           id: s.id, name: s.name, position: pos(s.lat, s.lon),
           point: {
-            pixelSize: 6, color: Color.fromCssColorString(GROUP_COLORS[s.group] ?? GROUP_COLORS.Other).withAlpha(0.85),
-            outlineColor: Color.BLACK.withAlpha(0.7), outlineWidth: 1,
-            heightReference: HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: 2e5,
+            pixelSize: 6, color: Color.fromCssColorString(GROUP_COLORS[s.group] ?? GROUP_COLORS.Other).withAlpha(0.7),
+            outlineColor: Color.fromCssColorString('#0a0d13').withAlpha(0.8), outlineWidth: 1.5,
+            heightReference: HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: 1.5e6,
             scaleByDistance: new NearFarScalar(3e4, 1.5, 1.5e7, 0.5),
-            translucencyByDistance: new NearFarScalar(2e6, 1, 1.2e7, 0.45),
-          },
-          label: s.id === selected || (selT && Math.abs(selT.lat - s.lat) < 0.01 && Math.abs(selT.lon - s.lon) < 0.01) ? undefined : {
-            text: s.name, font: '600 12px ui-sans-serif, system-ui, sans-serif', style: LabelStyle.FILL_AND_OUTLINE,
-            fillColor: Color.WHITE, outlineColor: Color.fromCssColorString('#0b0f17'), outlineWidth: 3,
-            verticalOrigin: VerticalOrigin.BOTTOM, horizontalOrigin: HorizontalOrigin.LEFT, pixelOffset: new Cartesian2(8, -4),
-            heightReference: HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: 2e5,
-            distanceDisplayCondition: new DistanceDisplayCondition(0, 4e5),
-            translucencyByDistance: new NearFarScalar(1.5e5, 1, 4e5, 0),
+            translucencyByDistance: new NearFarScalar(2e6, 0.9, 1.2e7, 0.4),
           },
         });
       }
@@ -267,18 +287,20 @@ export default function Globe() {
       for (const r of results.results) {
         const id = r.id ?? `r:${r.lat.toFixed(4)},${r.lon.toFixed(4)}`;
         const sel = id === selected;
+        const hov = id === hoveredId;
+        const size = sel ? 40 : hov ? 38 : 32;
         ds.entities.add({
           id: `res:${id}`, name: `#${r.rank}`, position: pos(r.lat, r.lon),
           billboard: {
-            image: numberedPin(r.rank, sel), width: sel ? 36 : 32, height: sel ? 36 : 32, verticalOrigin: VerticalOrigin.CENTER, horizontalOrigin: HorizontalOrigin.CENTER,
-            heightReference: HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: 2e5, eyeOffset: new Cartesian3(0, 0, sel ? -900 : -400),
+            image: numberedPin(r.rank, sel, hov), width: size, height: size, verticalOrigin: VerticalOrigin.CENTER, horizontalOrigin: HorizontalOrigin.CENTER,
+            heightReference: HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: 1.5e6, eyeOffset: new Cartesian3(0, 0, sel ? -900 : hov ? -700 : -400),
             scaleByDistance: new NearFarScalar(3e4, 1.35, 1.2e7, 0.75),
           },
         });
       }
     }
     viewer.scene.requestRender();
-  }, [results, layers.results, selected, ready]);
+  }, [results, layers.results, selected, hoveredId, ready]);
 
   // selection ring + name: last data source, so it draws on top of every other pin
   useEffect(() => {
@@ -286,24 +308,31 @@ export default function Globe() {
     const viewer = viewerRef.current;
     if (!ds || !viewer) return;
     ds.entities.removeAll();
+    const ht = hoveredId && hoveredId !== selected ? targets[hoveredId] : undefined;
+    if (ht) {
+      ds.entities.add({
+        id: 'hov-ring', name: 'sel', position: pos(ht.lat, ht.lon),
+        billboard: { image: ringCanvas('#ffffff'), width: 46, height: 46, heightReference: HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: 1.5e6, eyeOffset: new Cartesian3(0, 0, -1000), scaleByDistance: new NearFarScalar(3e4, 1.2, 1.2e7, 0.8) },
+      });
+    }
     const t = selected ? targets[selected] : undefined;
     if (t) {
       ds.entities.add({
         id: 'sel-ring', name: 'sel', position: pos(t.lat, t.lon),
         billboard: {
-          image: ringCanvas(), width: 40, height: 40, heightReference: HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: 2e5,
+          image: ringCanvas(), width: 46, height: 46, heightReference: HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: 1.5e6,
           eyeOffset: new Cartesian3(0, 0, -1200), scaleByDistance: new NearFarScalar(3e4, 1.2, 1.2e7, 0.8),
         },
         label: {
-          text: `${t.rank ? `#${t.rank} ` : ''}${t.name}`, font: '700 13px ui-sans-serif, system-ui, sans-serif', style: LabelStyle.FILL_AND_OUTLINE,
-          fillColor: Color.fromCssColorString('#FFE08A'), outlineColor: Color.fromCssColorString('#0b0f17'), outlineWidth: 3,
-          verticalOrigin: VerticalOrigin.BOTTOM, pixelOffset: new Cartesian2(0, -26), heightReference: HeightReference.CLAMP_TO_GROUND,
-          disableDepthTestDistance: 2e5, distanceDisplayCondition: new DistanceDisplayCondition(0, 6e6),
+          text: `${t.rank ? `#${t.rank} ` : ''}${t.kind === 'site' ? shortName(t.name) : placeFor(t.lat, t.lon, useStore.getState().sites).title}`, font: '600 12px "Inter Variable", ui-sans-serif, system-ui, sans-serif', style: LabelStyle.FILL,
+          fillColor: Color.fromCssColorString(GOLD), showBackground: true, backgroundColor: Color.fromCssColorString('rgba(10,13,19,0.86)'),
+          backgroundPadding: new Cartesian2(8, 5), verticalOrigin: VerticalOrigin.BOTTOM, horizontalOrigin: HorizontalOrigin.LEFT, pixelOffset: new Cartesian2(26, -6), heightReference: HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: 1.5e6, distanceDisplayCondition: new DistanceDisplayCondition(0, 6e6),
         },
       });
     }
     viewer.scene.requestRender();
-  }, [selected, targets, ready]);
+  }, [selected, targets, hoveredId, ready]);
 
   // ---- fault scarps ------------------------------------------------------------------------
   useEffect(() => {
@@ -448,7 +477,8 @@ export default function Globe() {
     const viewer = viewerRef.current;
     if (!viewer || !ready) return;
     const removeOld = () => { if (shadowLayer.current) { viewer.imageryLayers.remove(shadowLayer.current, true); shadowLayer.current = null; } viewer.scene.requestRender(); };
-    if (!layers.shadows) { removeOld(); return; }
+    if (!layers.shadows) { removeOld(); setShadowBusy(false); return; }
+    setShadowBusy(true);
     const my = ++shadowToken.current;
     // Throttled while scrubbing/playing (at most ~2 patches per second), immediate-ish on selection/regime change.
     const delay = Math.max(120, 450 - (performance.now() - lastShadowRun.current));
@@ -471,9 +501,10 @@ export default function Globe() {
         shadowLayer.current = layer;
         setShadowMock(!!patch.mock);
         setShadowKm(sizeKm);
+        setShadowBusy(false);
         setTimeout(() => { if (old && !viewer.isDestroyed()) { viewer.imageryLayers.remove(old, true); viewer.scene.requestRender(); } }, 250);
         viewer.scene.requestRender();
-      } catch (e) { console.warn('[shadows]', e); }
+      } catch (e) { console.warn('[shadows]', e); if (my === shadowToken.current) setShadowBusy(false); }
     }, delay);
     return () => clearTimeout(timer);
   }, [layers.shadows, cursor, regime, selTarget?.lat, selTarget?.lon, ready]);
@@ -484,7 +515,7 @@ export default function Globe() {
     if (!viewer || !fly || tokenRef.current === fly.nonce) return;
     tokenRef.current = fly.nonce;
     if (fly.global) {
-      viewer.camera.flyTo({ destination: poleCam(), orientation: { heading: 0, pitch: -CMath.PI_OVER_TWO, roll: 0 }, duration: 1.6 });
+      viewer.camera.flyToBoundingSphere(new BoundingSphere(poleTarget(), 1), { offset: poleOffset(), duration: 1.6 });
       return;
     }
     const t = fly.id ? useStore.getState().targets[fly.id] : undefined;
@@ -507,22 +538,42 @@ export default function Globe() {
   }, [fly]);
 
   const hv = hover ? targets[hover.id] : null;
+  const objM = query.objectives?.[0]?.metric;
+  const mdef = objM ? METRIC_BY_NAME[objM] : undefined;
+  const mval = hv && objM ? hv.metrics?.[objM] : undefined;
+  const keyMetric = mdef && typeof mval === 'number' ? `${mdef.label} ${mval.toFixed(mdef.digits)}${mdef.unit ? ' ' + mdef.unit : ''}` : null;
+  const cycleRelief = () => {
+    const i = RELIEF_STEPS.indexOf(exaggeration);
+    useStore.setState({ exaggeration: RELIEF_STEPS[(i + 1) % RELIEF_STEPS.length] });
+  };
+  const nextRelief = RELIEF_STEPS[(RELIEF_STEPS.indexOf(exaggeration) + 1) % RELIEF_STEPS.length];
   return (
     <div className="globe">
       <div ref={hostRef} className="globe-host" />
       {hover && hv && (
-        <div className="tip" style={{ left: hover.x + 14, top: hover.y + 10 }}>
-          <b>{hv.rank ? `#${hv.rank} ` : ''}{hv.name}</b>
-          <span>{hv.lat.toFixed(3)}{'°'}, {hv.lon.toFixed(3)}{'°'}{hv.group ? ` · ${hv.group}` : ''}</span>
+        <div className="gl-tip" style={{ left: hover.x + 14, top: hover.y + 12 }}>
+          <b>{hv.rank ? <span className={`gl-rank ${hv.rank === 1 ? 'gold' : ''}`}>{hv.rank}</span> : null}{hv.kind === 'site' ? shortName(hv.name) : placeFor(hv.lat, hv.lon, sites).title}</b>
+          <span>{keyMetric ?? `${hv.lat.toFixed(2)}\u00b0, ${hv.lon.toFixed(2)}\u00b0${hv.group ? ` \u00b7 ${hv.group}` : ''}`}</span>
         </div>
       )}
-      {layers.shadows && <div className={`shadow-flag ${shadowMock ? 'demo' : ''}`}>terrain-true shadows (LOLA){shadowMock ? ' \u00b7 demo patch' : ''} {'\u00b7'} {shadowKm} km{mode === 'mock' ? '' : ''}</div>}
-      <div className="globe-btns">
-        <button className="btn sm" onClick={() => flyTo(null, true)}>South pole / global</button>
-        <button className="btn sm" disabled={!selected} onClick={() => selected && flyTo(selected)}>Fly to selection</button>
-        <button className={`btn sm ${exaggeration > 1 ? 'on' : ''}`} title="Vertical exaggeration of terrain (hero shot)" onClick={() => useStore.setState({ exaggeration: exaggeration > 1 ? 1 : 3 })}>Relief {exaggeration}{'\u00d7'}</button>
-        <button className={`btn sm ${layers.shadows ? 'on' : ''}`} onClick={() => useStore.setState({ layers: { ...layers, shadows: !layers.shadows } })}>Shadows</button>
+      <div className="gl-toolbar" role="toolbar" aria-label="Map controls">
+        <IconButton solid tip="left" icon={House} label="Pole view" onClick={() => flyTo(null, true)} />
+        <IconButton solid tip="left" icon={Crosshair} label="Fly to selection" disabled={!selected} onClick={() => selected && flyTo(selected)} />
+        <IconButton solid tip="left" icon={Sun} label={layers.shadows ? 'Terrain-true shadows: on' : 'Terrain-true shadows: off'} active={layers.shadows}
+          onClick={() => useStore.setState({ layers: { ...layers, shadows: !layers.shadows } })} />
+        <span className="gl-relief">
+          <IconButton solid tip="left" icon={Mountain} label={`Relief ${exaggeration}\u00d7 (click for ${nextRelief}\u00d7)`} active={exaggeration > 1} onClick={cycleRelief} />
+          <i className="gl-badge" aria-hidden>{exaggeration}{'\u00d7'}</i>
+        </span>
+        <IconButton solid tip="left" icon={LayersIcon} label="Layers" onClick={() => useStore.setState({ leftTab: 'layers' })} />
       </div>
+      {layers.shadows && (
+        <div className="gl-status" role="status">
+          {shadowBusy && <Spinner />}
+          <span>Terrain-true shadows {'\u00b7'} {shadowKm} km {'\u00b7'} LOLA</span>
+          {shadowMock && <Tag tone="warn">demo patch</Tag>}
+        </div>
+      )}
     </div>
   );
 }

@@ -100,7 +100,12 @@ export interface ChipDesc { key: string; kind: 'window' | 'region' | 'height' | 
 
 export function describeRegion(r: Query['region']): string {
   switch (r.type) {
-    case 'polar': return `lat ${r.min_lat}° to ${r.max_lat}°`;
+    case 'polar': {
+      const lo = Math.min(Math.abs(r.min_lat), Math.abs(r.max_lat)), hi = Math.max(Math.abs(r.min_lat), Math.abs(r.max_lat));
+      const hemi = r.max_lat <= 0 ? 'S' : r.min_lat >= 0 ? 'N' : '';
+      if (hemi && hi >= 89.999) return `${hemi === 'S' ? 'South' : 'North'} polar cap ${lo}–90° ${hemi}`;
+      return hemi ? `${lo}–${hi}° ${hemi}` : `lat ${r.min_lat}° to ${r.max_lat}°`;
+    }
     case 'circle': return `${r.radius_km} km around ${r.lat.toFixed(2)}°, ${r.lon.toFixed(2)}°`;
     case 'sites': return `${r.ids.length} curated site${r.ids.length === 1 ? '' : 's'}`;
     case 'bbox': return `box ${r.south}° to ${r.north}° lat, ${r.west}° to ${r.east}° lon`;

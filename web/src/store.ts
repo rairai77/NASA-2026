@@ -23,6 +23,7 @@ export interface Target {
 export interface TargetData { horizon?: HorizonResult; vis?: VisResult; key?: string; loading?: boolean; error?: string }
 
 export type LeftTab = 'results' | 'sites' | 'layers' | 'replay' | 'diff';
+export type InspectorTab = 'sky' | 'power' | 'traverse' | 'data';
 export const MAX_COMPARE = 4;
 
 export interface Layers { sites: boolean; results: boolean; faults: boolean; keepout: boolean; keepoutKm: number; shadows: boolean }
@@ -87,6 +88,8 @@ interface State {
   layers: Layers;
   educator: boolean;
   leftTab: LeftTab;
+  /** active tab of the site inspector */
+  inspectorTab: InspectorTab;
   fpOpen: boolean;
   validationOpen: boolean;
   builderOpen: boolean;
@@ -96,6 +99,8 @@ interface State {
   layerDefs: LayerDef[];
   layerState: Record<string, LayerState>;
   exaggeration: number;
+  /** id of the result card under the mouse (highlights its pin on the globe) */
+  hoveredId: string | null;
   markers: Marker[];
   replay: ReplayInfo | null;
   playUntil: number | null;
@@ -103,6 +108,9 @@ interface State {
   scenB: Scenario | null;
   pendingSlip: boolean;
   tourStep: number | null;
+  /** shell: first-visit welcome card and phone bottom-sheet tab */
+  welcomeOpen: boolean;
+  phoneTab: 'results' | 'site' | 'timeline';
   initialCam: ShareState['cam'];
 }
 
@@ -116,6 +124,13 @@ const restored = decodeState(typeof location !== 'undefined' ? location.hash : '
 const q0 = restored?.q ? mergeQuery(defaultQuery(today), restored.q) : defaultQuery(today);
 const [w0, w1] = window_(q0);
 
+function shouldShowWelcome(): boolean {
+  try {
+    if (/^#s=./.test(location.hash) || restored) return false;
+    return localStorage.getItem('llsn.welcome.v1') === null;
+  } catch { return false; }
+}
+
 export const useStore = create<State>(() => ({
   panel: q0.power ?? { ...DEFAULT_PANEL },
   traverse: { goal: null, picking: false, limits: { ...DEFAULT_LIMITS }, busy: false, result: null, startId: null, error: null },
@@ -123,9 +138,11 @@ export const useStore = create<State>(() => ({
   query: q0, unparsed: [], warnings: [], parsing: false, results: null, ranking: false, progress: null,
   selected: null, compare: [], data: {},
   cursor: clamp(restored?.t ?? w0 + (w1 - w0) * 0.1, w0, w1), playing: false, speed: 6 * 3600, view: [w0, w1],
-  layers: { sites: true, results: true, faults: false, keepout: false, keepoutKm: 5, shadows: false },
-  layerDefs: [], layerState: {}, exaggeration: 1, markers: [], replay: null, playUntil: null, scenA: null, scenB: null, pendingSlip: false, tourStep: null,
+  layers: { sites: true, results: true, faults: false, keepout: false, keepoutKm: 5, shadows: true },
+  layerDefs: [], layerState: {}, exaggeration: 1, hoveredId: null, markers: [], replay: null, playUntil: null, scenA: null, scenB: null, pendingSlip: false, tourStep: null,
+  welcomeOpen: shouldShowWelcome(), phoneTab: 'results',
   educator: restored?.ed ?? false, leftTab: (restored?.tab as LeftTab) ?? 'results',
+  inspectorTab: 'sky',
   fpOpen: false, validationOpen: false, builderOpen: false, toast: null, ellipseDraw: null, fly: null,
   initialCam: restored?.cam ?? null,
 }));
