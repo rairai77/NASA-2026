@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "lunar-engine"
+version = "0.1.0"
+description = "Lunar landing site navigator compute engine (Rust)"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.21"]
+
+[tool.maturin]
+features = ["python", "parallel"]
+module-name = "lunar_engine"
