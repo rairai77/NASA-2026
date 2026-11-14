@@ -2,7 +2,6 @@ import { useMemo } from 'react';
 import * as d3 from 'd3';
 import type { VisResult } from '../engine/api.ts';
 import type { Sample } from '../lib/countdown.ts';
-import { COLORS } from './LeftPanel.tsx';
 
 const D2R = Math.PI / 180;
 
@@ -59,11 +58,11 @@ function Polar({ horizon, vis, now, zoom }: { horizon: Float32Array; vis?: VisRe
       {rings.map((el) => <circle key={el} cx={C} cy={C} r={rOf(el)} fill="none" className="hp-grid" strokeDasharray={el === 0 ? '' : '2 3'} />)}
       {rings.map((el) => <text key={`t${el}`} x={C + 3} y={C - rOf(el) - 2} className="ptxt">{el}{'°'}</text>)}
       {[0, 90, 180, 270].map((az) => { const [x1, y1] = pt(az, top), [x2, y2] = pt(az, bot); return <line key={az} x1={x1} y1={y1} x2={x2} y2={y2} className="hp-grid" />; })}
-      {sunSegs.map((s, i) => <path key={`s${i}`} d={line(s.map((p) => pt(p.az, p.el))) ?? ''} fill="none" stroke={COLORS.sun} strokeWidth={1.6} opacity={0.9} />)}
-      {earthSegs.map((s, i) => <path key={`e${i}`} d={line(s.map((p) => pt(p.az, p.el))) ?? ''} fill="none" stroke={COLORS.earth} strokeWidth={1.6} opacity={0.95} />)}
+      {sunSegs.map((s, i) => <path key={`s${i}`} d={line(s.map((p) => pt(p.az, p.el))) ?? ''} fill="none" style={{ stroke: 'var(--sun)' }} strokeWidth={1.6} opacity={0.9} />)}
+      {earthSegs.map((s, i) => <path key={`e${i}`} d={line(s.map((p) => pt(p.az, p.el))) ?? ''} fill="none" style={{ stroke: 'var(--earth)' }} strokeWidth={1.6} opacity={0.95} />)}
       <path d={outer + skyPath} fillRule="evenodd" className="hp-terrain" />
-      {now && now.earthEl > bot && <circle cx={pt(now.earthAz, now.earthEl)[0]} cy={pt(now.earthAz, now.earthEl)[1]} r={6} fill={COLORS.earth} className="hp-dot" />}
-      {now && now.sunEl > bot && <circle cx={pt(now.sunAz, now.sunEl)[0]} cy={pt(now.sunAz, now.sunEl)[1]} r={6} fill={COLORS.sun} className="hp-dot" />}
+      {now && now.earthEl > bot && <circle cx={pt(now.earthAz, now.earthEl)[0]} cy={pt(now.earthAz, now.earthEl)[1]} r={6} style={{ fill: 'var(--earth)' }} className="hp-dot" />}
+      {now && now.sunEl > bot && <circle cx={pt(now.sunAz, now.sunEl)[0]} cy={pt(now.sunAz, now.sunEl)[1]} r={6} style={{ fill: 'var(--sun)' }} className="hp-dot" />}
       {(['N', 'E', 'S', 'W'] as const).map((l, i) => { const [x, y] = pt(i * 90, bot); const dx = Math.sin(i * 90 * D2R) * 11, dy = -Math.cos(i * 90 * D2R) * 11; return <text key={l} x={x + dx} y={y + dy + 4} textAnchor="middle" className="compass">{l}</text>; })}
     </svg>
   );
@@ -86,12 +85,12 @@ function Panorama({ horizon, vis, now }: { horizon: Float32Array; vis?: VisResul
       <rect x={m.l} y={m.t} width={W - m.l - m.r} height={H - m.t - m.b} className="hp-bg" />
       {[-5, 0, 5, 10, 15].map((e) => <g key={e}><line x1={m.l} x2={W - m.r} y1={y(e)} y2={y(e)} className="hp-grid" strokeDasharray={e === 0 ? '' : '2 3'} /><text x={m.l - 4} y={y(e) + 3} textAnchor="end" className="ptxt">{e}{'°'}</text></g>)}
       {[0, 45, 90, 135, 180, 225, 270, 315, 360].map((a) => <g key={a}><line x1={x(a)} x2={x(a)} y1={m.t} y2={H - m.b} className="hp-grid" /><text x={x(a)} y={H - 7} textAnchor="middle" className={a % 90 === 0 ? 'compass' : 'ptxt'}>{({ 0: 'N', 90: 'E', 180: 'S', 270: 'W', 360: 'N' } as Record<number, string>)[a] ?? a}</text></g>)}
-      {sunSegs.map((s, i) => <path key={`s${i}`} d={ln(s) ?? ''} fill="none" stroke={COLORS.sun} strokeWidth={1.6} opacity={0.9} />)}
-      {earthSegs.map((s, i) => <path key={`e${i}`} d={ln(s) ?? ''} fill="none" stroke={COLORS.earth} strokeWidth={1.6} opacity={0.95} />)}
+      {sunSegs.map((s, i) => <path key={`s${i}`} d={ln(s) ?? ''} fill="none" style={{ stroke: 'var(--sun)' }} strokeWidth={1.6} opacity={0.9} />)}
+      {earthSegs.map((s, i) => <path key={`e${i}`} d={ln(s) ?? ''} fill="none" style={{ stroke: 'var(--earth)' }} strokeWidth={1.6} opacity={0.95} />)}
       <path d={area} className="hp-terrain hp-fill" />
       <path d={ridge} fill="none" className="hp-ridge" />
-      {now && now.earthEl >= -5 && <circle cx={x(now.earthAz)} cy={y(Math.min(15, now.earthEl))} r={6} fill={COLORS.earth} className="hp-dot" />}
-      {now && now.sunEl >= -5 && <circle cx={x(now.sunAz)} cy={y(Math.min(15, now.sunEl))} r={6} fill={COLORS.sun} className="hp-dot" />}
+      {now && now.earthEl >= -5 && <circle cx={x(now.earthAz)} cy={y(Math.min(15, now.earthEl))} r={6} style={{ fill: 'var(--earth)' }} className="hp-dot" />}
+      {now && now.sunEl >= -5 && <circle cx={x(now.sunAz)} cy={y(Math.min(15, now.sunEl))} r={6} style={{ fill: 'var(--sun)' }} className="hp-dot" />}
     </svg>
   );
 }

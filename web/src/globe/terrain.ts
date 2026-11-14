@@ -1,4 +1,5 @@
 import { CustomHeightmapTerrainProvider, Ellipsoid, GeographicTilingScheme, Math as CMath, type TerrainProvider } from 'cesium';
+import { perfLog } from '../engine/perf.ts';
 import type { EngineApi } from '../engine/api.ts';
 
 /** Deepest level requested. LOLA 20 m near the pole ~ level 13 (tile 1.4 km / 64 cells ~ 22 m). */
@@ -22,6 +23,7 @@ export function createTerrainProvider(engine: Pick<EngineApi, 'sampleHeights'>):
       if (!p) {
         const r = tilingScheme.tileXYToRectangle(x, y, level);
         const n = level < 4 ? 33 : 65;
+        const t0 = performance.now();
         p = engine
           .sampleHeights(CMath.toDegrees(r.west), CMath.toDegrees(r.south), CMath.toDegrees(r.east), CMath.toDegrees(r.north), n, n)
           .then((h) => {
@@ -39,6 +41,7 @@ export function createTerrainProvider(engine: Pick<EngineApi, 'sampleHeights'>):
             return out;
           })
           .catch(() => new Float32Array(65 * 65))
+          .then((o) => { perfLog('main.terrainTile', performance.now() - t0, { level, at: Math.round(performance.now()) }); return o; })
           .finally(() => setTimeout(() => inflight.delete(key), 3000));
         inflight.set(key, p);
       }

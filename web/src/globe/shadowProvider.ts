@@ -1,9 +1,38 @@
 // Imagery provider that renders terrain-true shadows from an engine ShadowPatch (gnomonic ENU grid).
+//
+// Tile reprojection is the hot loop (256x256 pixels per tile, main thread). It is kept cheap by precomputing
+// everything that only depends on the tile column or row (no trig per pixel), writing packed RGBA words into a
+// Uint32Array, rejecting tiles that lie outside the round patch with one angular test, and by a small scheduler
+// that runs tile jobs newest-first under a per-task time budget so the UI never janks.
 import { Cartesian3, Ellipsoid, Event as CEvent, GeographicTilingScheme, Math as CMath, Rectangle } from 'cesium';
+import { perfLog } from '../engine/perf.ts';
 import type { ShadowPatch } from '../engine/api.ts';
 
 const R = 1737400;
 const TS = 256;
+/** Time budget per scheduler task (ms); between tasks the browser can paint and handle input. */
+const BUDGET_MS = 5;
+
+// ---- tile job scheduler: newest first, time-sliced -------------------------------------------------------
+interface Job { run: () => void; dead: () => boolean; skip: () => void }
+const queue: Job[] = [];
+let pumping = false;
+let chan: MessageChannel | null = null;
+function schedule() {
+  if (pumping) return;
+  pumping = true;
+  if (!chan) { chan = new MessageChannel(); chan.port1.onmessage = step; }
+  chan.port2.postMessage(0);
+}
+function step() {
+  const t0 = performance.now();
+  while (queue.length && performance.now() - t0 < BUDGET_MS) {
+    const j = queue.pop()!; // LIFO: the camera usually cares about the most recently requested tiles
+    if (j.dead()) j.skip(); else j.run();
+  }
+  if (queue.length) chan!.port2.postMessage(0);
+  else pumping = false;
+}
 
 export class ShadowImageryProvider {
   tilingScheme = new GeographicTilingScheme({ ellipsoid: Ellipsoid.MOON });
@@ -22,6 +51,13 @@ export class ShadowImageryProvider {
   private U: Cartesian3; private E: Cartesian3; private N: Cartesian3;
   private halfM: number; private pixelM: number; private feather = 0.05; private maxAlpha = 0.92;
   private blank?: HTMLCanvasElement;
+  private disposed = false;
+  private patchAng: number; // angular radius of the round patch (rad)
+  private flat: number;
+  private stats = { tiles: 0, drawn: 0, ms: 0, max: 0 };
+  private statTimer: ReturnType<typeof setTimeout> | undefined;
+  // column tables are shared by every tile of the same (level, x) -> small cache
+  private colCache = new Map<string, { au: Float64Array; ae: Float64Array; an: Float64Array }>();
 
   constructor(private patch: ShadowPatch) {
     const lat = CMath.toRadians(patch.lat), lon = CMath.toRadians(patch.lon);
@@ -30,6 +66,8 @@ export class ShadowImageryProvider {
     this.N = new Cartesian3(-Math.sin(lat) * Math.cos(lon), -Math.sin(lat) * Math.sin(lon), Math.cos(lat));
     this.halfM = (patch.sizeKm * 1000) / 2;
     this.pixelM = (patch.sizeKm * 1000) / patch.px;
+    this.patchAng = Math.atan(this.halfM / R);
+    this.flat = Math.max(Math.sin(CMath.toRadians(Math.max(patch.sunEl ?? 2, 0.3))), 0.005);
     // Regional patches fade out over a wider rim and let a little base texture through, so the patch edge
     // doesn't read as a dark disc against the (uniformly lit) base mosaic. Local patches stay crisp.
     this.feather = patch.sizeKm > 200 ? 0.14 : 0.05;
@@ -59,6 +97,9 @@ export class ShadowImageryProvider {
     }
   }
 
+  /** Drop queued tile jobs and tables; call when the layer is removed. */
+  dispose() { this.disposed = true; this.colCache.clear(); }
+
   private blankTile() {
     if (!this.blank) { this.blank = document.createElement('canvas'); this.blank.width = this.blank.height = 1; }
     return this.blank;
@@ -66,31 +107,80 @@ export class ShadowImageryProvider {
 
   requestImage(x: number, y: number, level: number): Promise<HTMLCanvasElement> {
     const r = this.tilingScheme.tileXYToRectangle(x, y, level);
-    if (!Rectangle.intersection(r, this.rectangle)) return Promise.resolve(this.blankTile());
-    const c = document.createElement('canvas');
-    c.width = c.height = TS;
-    const g = c.getContext('2d')!;
-    const img = g.createImageData(TS, TS);
+    if (this.disposed || !Rectangle.intersection(r, this.rectangle) || !this.tileMayTouchPatch(r)) return Promise.resolve(this.blankTile());
+    return new Promise((resolve) => {
+      queue.push({ dead: () => this.disposed, skip: () => resolve(this.blankTile()), run: () => resolve(this.renderTile(x, level, r)) });
+      schedule();
+    });
+  }
+
+  /** Cheap conservative test: is the tile's bounding cap within reach of the round patch? */
+  private tileMayTouchPatch(r: Rectangle): boolean {
+    const lc = (r.north + r.south) / 2;
+    let lonc = (r.west + r.east) / 2;
+    if (r.east < r.west) lonc += Math.PI; // antimeridian (not produced by our scheme, kept for safety)
+    const cl = Math.cos(lc);
+    const qx = cl * Math.cos(lonc), qy = cl * Math.sin(lonc), qz = Math.sin(lc);
+    const dot = qx * this.U.x + qy * this.U.y + qz * this.U.z;
+    const ang = Math.acos(Math.max(-1, Math.min(1, dot)));
+    // half-diagonal of the tile as an angle: lat half-extent and lon half-extent scaled by the larger |cos(lat)|
+    const hl = (r.north - r.south) / 2;
+    const maxCos = Math.max(Math.cos(r.north), Math.cos(r.south));
+    const hw = ((r.east - r.west) / 2) * maxCos;
+    return ang - Math.hypot(hl, hw) * 1.05 < this.patchAng * 1.02;
+  }
+
+  private columns(level: number, x: number, r: Rectangle) {
+    const key = `${level}/${x}`;
+    let c = this.colCache.get(key);
+    if (c) return c;
+    const au = new Float64Array(TS), ae = new Float64Array(TS), an = new Float64Array(TS);
+    const { U, E, N } = this;
+    const dl = (r.east - r.west) / TS;
+    for (let i = 0; i < TS; i++) {
+      const lon = r.west + (i + 0.5) * dl;
+      const co = Math.cos(lon), si = Math.sin(lon);
+      au[i] = co * U.x + si * U.y;
+      ae[i] = co * E.x + si * E.y;
+      an[i] = co * N.x + si * N.y;
+    }
+    c = { au, ae, an };
+    if (this.colCache.size > 64) this.colCache.clear();
+    this.colCache.set(key, c);
+    return c;
+  }
+
+  private renderTile(x: number, level: number, r: Rectangle): HTMLCanvasElement {
+    const t0 = performance.now();
+    const { au, ae, an } = this.columns(level, x, r);
     const px = this.patch.px, d = this.patch.data;
-    const { U, E, N, halfM, pixelM } = this;
-    const flat = Math.max(Math.sin(CMath.toRadians(Math.max(this.patch.sunEl ?? 2, 0.3))), 0.005);
+    const { U, E, N, halfM, pixelM, flat } = this;
+    const Uz = U.z, Ez = E.z, Nz = N.z;
+    const invHalf = 1 / halfM, invPix = 1 / pixelM;
+    const feather = this.feather, maxAlpha = this.maxAlpha;
+    const buf = new Uint32Array(TS * TS);
+    const dLat = (r.north - r.south) / TS;
+    const lastIdx = px - 2;
     let any = false;
     for (let j = 0; j < TS; j++) {
-      const lat = r.north - ((j + 0.5) / TS) * (r.north - r.south);
+      const lat = r.north - (j + 0.5) * dLat;
       const cl = Math.cos(lat), sl = Math.sin(lat);
+      const slU = sl * Uz, slE = sl * Ez, slN = sl * Nz;
+      const row = j * TS;
       for (let i = 0; i < TS; i++) {
-        const lon = r.west + ((i + 0.5) / TS) * (r.east - r.west);
-        const qx = cl * Math.cos(lon), qy = cl * Math.sin(lon), qz = sl;
-        const qu = qx * U.x + qy * U.y + qz * U.z;
+        const qu = cl * au[i] + slU;
         if (qu <= 0.01) continue;
-        const gx = (R * (qx * E.x + qy * E.y + qz * E.z)) / qu, gy = (R * (qx * N.x + qy * N.y + qz * N.z)) / qu;
-        const dd = Math.max(Math.abs(gx), Math.abs(gy)) / halfM;
-        if (dd >= 1) continue;
-        const rr = Math.hypot(gx, gy) / halfM; // round patch with a soft edge
+        const k = R / qu;
+        const gx = k * (cl * ae[i] + slE), gy = k * (cl * an[i] + slN);
+        const rr = Math.sqrt(gx * gx + gy * gy) * invHalf; // round patch with a soft edge
         if (rr >= 1) continue;
-        const fj = (gx + halfM) / pixelM - 0.5, fi = (halfM - gy) / pixelM - 0.5;
-        const j0 = Math.max(0, Math.min(px - 2, Math.floor(fj))), i0 = Math.max(0, Math.min(px - 2, Math.floor(fi)));
-        const a = Math.max(0, Math.min(1, fj - j0)), b = Math.max(0, Math.min(1, fi - i0));
+        const fj = (gx + halfM) * invPix - 0.5, fi = (halfM - gy) * invPix - 0.5;
+        let j0 = Math.floor(fj), i0 = Math.floor(fi);
+        j0 = j0 < 0 ? 0 : j0 > lastIdx ? lastIdx : j0;
+        i0 = i0 < 0 ? 0 : i0 > lastIdx ? lastIdx : i0;
+        let a = fj - j0, b = fi - i0;
+        a = a < 0 ? 0 : a > 1 ? 1 : a;
+        b = b < 0 ? 0 : b > 1 ? 1 : b;
         const k00 = 2 * (i0 * px + j0), k10 = k00 + 2 * px;
         const w00 = (1 - a) * (1 - b), w01 = a * (1 - b), w10 = (1 - a) * b, w11 = a * b;
         const sun = (d[k00] * w00 + d[k00 + 2] * w01 + d[k10] * w10 + d[k10 + 2] * w11) / 255;
@@ -101,16 +191,33 @@ export class ShadowImageryProvider {
         // base brightness and only slopes facing away from the Sun darken.
         const rel = Math.min(1, shade / flat);
         const lightness = sun * (0.25 + 0.75 * rel);
-        const o = 4 * (j * TS + i);
-        img.data[o] = 6; img.data[o + 1] = 9; img.data[o + 2] = 20; // earthshine-tinted black
-        const edge = Math.max(0, Math.min(1, (1 - rr) / this.feather));
-        img.data[o + 3] = 255 * this.maxAlpha * (1 - lightness) * edge;
+        const edge = Math.max(0, Math.min(1, (1 - rr) / feather));
+        const alpha = (255 * maxAlpha * (1 - lightness) * edge + 0.5) | 0; // rounds like the Uint8ClampedArray write it replaces
+        // RGBA bytes 6, 9, 20 (earthshine-tinted black) + alpha, little-endian word
+        buf[row + i] = ((alpha << 24) | (20 << 16) | (9 << 8) | 6) >>> 0;
         any = true;
       }
     }
-    if (!any) return Promise.resolve(this.blankTile());
-    g.putImageData(img, 0, 0);
-    return Promise.resolve(c);
+    let out: HTMLCanvasElement;
+    if (!any) out = this.blankTile();
+    else {
+      out = document.createElement('canvas');
+      out.width = out.height = TS;
+      const g = out.getContext('2d')!;
+      g.putImageData(new ImageData(new Uint8ClampedArray(buf.buffer), TS, TS), 0, 0);
+    }
+    this.record(performance.now() - t0, any);
+    return out;
+  }
+
+  /** Dev: one summary line per patch (tiles, drawn, total and max ms), emitted once tile jobs go quiet. */
+  private record(ms: number, drawn: boolean) {
+    const st = this.stats;
+    st.tiles++; if (drawn) st.drawn++; st.ms += ms; st.max = Math.max(st.max, ms);
+    if (!import.meta.env.DEV) return;
+    perfLog('main.reprojTile', ms, { any: drawn, px: this.patch.px });
+    clearTimeout(this.statTimer);
+    this.statTimer = setTimeout(() => { perfLog('main.reprojPatch', st.ms, { tiles: st.tiles, drawn: st.drawn, maxTileMs: Math.round(st.max * 10) / 10, sizeKm: this.patch.sizeKm, px: this.patch.px }); }, 400);
   }
 
   pickFeatures() { return undefined; }

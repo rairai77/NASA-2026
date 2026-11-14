@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, CircleDashed, GitCompare, History, Info, Layers, ListOrdered, MapPin, Plus, Search, SearchX, Spline, Sun } from 'lucide-react';
+import { Check, ChevronDown, ChevronLeft, PanelLeftOpen, ChevronRight, CircleDashed, GitCompare, History, Info, Layers, ListOrdered, MapPin, Plus, Search, SearchX, Spline, Sun } from 'lucide-react';
 import type { VisResult } from '../engine/api.ts';
 import { getEngine } from '../engine/client.ts';
 import { placeFor } from '../lib/places.ts';
@@ -32,14 +32,19 @@ export function useSpark(t: Target | undefined, win: [number, number]) {
   return v;
 }
 
-/** Add to / remove from the timeline (the compare list). */
-export function TimelineToggle({ id, size = 'sm' }: { id: string; size?: 'sm' | 'md' }) {
+export const COMPARE_TIP = 'Show this site as an extra row on the timeline to compare it with others';
+/** "Compare": add / remove a site as an extra row on the timeline (the compare list). */
+export function TimelineToggle({ id, size = 'sm', compact }: { id: string; size?: 'sm' | 'md'; compact?: boolean }) {
   const on = useStore((s) => s.compare.includes(id));
   const full = useStore((s) => s.compare.length >= MAX_COMPARE);
-  const label = on ? 'Remove from timeline' : full ? `Timeline is full (${MAX_COMPARE} sites)` : 'Add to timeline';
+  const tip = on ? 'Remove this site from the timeline comparison' : full ? `Timeline is full (${MAX_COMPARE} sites). Remove one first.` : COMPARE_TIP;
   return (
     <span onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
-      <IconButton icon={on ? Check : Plus} label={label} size={size} active={on} tip="left" className="pn-add" onClick={() => toggleCompare(id)} />
+      {compact
+        ? <IconButton icon={on ? Check : Plus} label={on ? 'Comparing: remove from timeline' : 'Compare on the timeline'} size={size} active={on} tip="left" className="pn-add" onClick={() => toggleCompare(id)} />
+        : <Tooltip content={tip} side="bottom" wrap>
+            <Button size="sm" icon={on ? Check : Plus} active={on} className="pn-add" disabled={!on && full} aria-label={`Compare: ${tip}`} onClick={() => toggleCompare(id)}>Compare</Button>
+          </Tooltip>}
     </span>
   );
 }
@@ -106,6 +111,7 @@ function ResultsTab() {
   const q = useStore((s) => s.query);
   const ranking = useStore((s) => s.ranking);
   const progress = useStore((s) => s.progress);
+  const rankSkipped = useStore((s) => s.rankSkipped);
   const win = useMemo(() => windowOf(q), [q]);
   const cols = useMemo(() => {
     const names = [...q.objectives.map((o) => o.metric), ...q.filters.map((f) => f.metric)];
@@ -132,6 +138,18 @@ function ResultsTab() {
             </li>
           ))}
         </ol>
+      </div>
+    );
+  }
+
+  if (rankSkipped && !results) {
+    return (
+      <div className="pn-body">
+        <div className="pn-empty">
+          <span className="pn-empty-ic"><Info aria-hidden /></span>
+          <b>No ranking for these dates</b>
+          <p>Ranking covers 2026{'–'}2030; site timelines still work back to 2023. Pick a site on the globe or in Sites to see its timeline.</p>
+        </div>
       </div>
     );
   }
@@ -176,7 +194,7 @@ function ResultsTab() {
           return <ResultCard key={id} id={id} rank={r.rank} coarse={r.coarse} cols={cols} win={win} />;
         })}
       </ol>
-      <div className="pn-legend"><i style={{ background: COLORS.sun }} />Sun <i style={{ background: COLORS.earth }} />Earth <i style={{ background: COLORS.both }} />both up <span>{'·'} tick = timeline cursor</span></div>
+      <div className="pn-legend"><i style={{ background: 'var(--sun)' }} />Sun <i style={{ background: 'var(--earth)' }} />Earth <i style={{ background: 'var(--both)', border: '1px solid var(--border-strong)' }} />Both up <span>{'·'} tick = timeline cursor</span></div>
     </div>
   );
 }
@@ -201,7 +219,7 @@ function SitesTab() {
         <Search aria-hidden />
         <input type="search" placeholder="Search sites" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Search sites" />
       </label>
-      <p className="pn-hint">Use <Plus aria-hidden className="pn-inline-ic" /> to put up to {MAX_COMPARE} sites on one timeline.</p>
+      <p className="pn-hint">Use <b>Compare</b> <Plus aria-hidden className="pn-inline-ic" /> to show up to {MAX_COMPARE} sites as rows on one timeline.</p>
       {groups.map(([g, list]) => (
         <section key={g} className="pn-group">
           <button className="pn-group-h" onClick={() => setClosed({ ...closed, [g]: !closed[g] })} aria-expanded={!closed[g]}>
@@ -216,7 +234,7 @@ function SitesTab() {
                   onMouseEnter={() => useStore.setState({ hoveredId: s.id })} onMouseLeave={() => useStore.setState({ hoveredId: null })}>
                   <span className="pn-row-name">{s.name}</span>
                   {s.representative && <Tag title="A single point stands in for a larger region">rep.</Tag>}
-                  <TimelineToggle id={s.id} />
+                  <TimelineToggle id={s.id} compact />
                 </li>
               ))}
             </ul>
@@ -293,7 +311,7 @@ function LayersTab() {
               {st.on && (
                 <div className="pn-lbody">
                   <div className="pn-legendbar" style={{ background: grad }} />
-                  <div className="pn-legendlbl mono"><span>{d.legend.min}{d.units && d.units !== 'mask' ? ` ${d.units}` : ''}</span><span>{d.units === 'mask' ? 'mask' : `${d.legend.max}${d.units ? ` ${d.units}` : ''}`}</span></div>
+                  <div className="pn-legendlbl mono"><span>{d.legend.min}{d.units && d.units !== 'mask' ? ` ${d.units}` : ''}</span><span>{d.units === 'mask' ? 'Mask' : `${d.legend.max}${d.units ? ` ${d.units}` : ''}`}</span></div>
                   <label className="pn-slider">
                     <span>Opacity</span>
                     <input type="range" min={0.1} max={1} step={0.05} value={st.opacity} onChange={(e) => setLayerState(d.id, { opacity: parseFloat(e.target.value) })} />
@@ -310,8 +328,9 @@ function LayersTab() {
   );
 }
 
-export function LeftPanel() {
+export function LeftPanel({ allowCollapse = true }: { allowCollapse?: boolean }) {
   const tab = useStore((s) => s.leftTab);
+  const collapsed = useStore((s) => s.leftCollapsed) && allowCollapse;
   const nRes = useStore((s) => s.results?.results.length ?? 0);
   const nSites = useStore((s) => s.sites.length);
   const layers = useStore((s) => s.layers);
@@ -322,12 +341,27 @@ export function LeftPanel() {
     { id: 'results', label: L('Results'), icon: ListOrdered, count: nRes || undefined, title: 'Results: ranked sites' },
     { id: 'sites', label: L('Sites'), icon: MapPin, count: nSites || undefined, title: 'Sites: curated landing sites' },
     { id: 'layers', label: L('Layers'), icon: Layers, count: nLayers || undefined, title: 'Layers: map overlays' },
-    { id: 'replay', label: L('Replay'), icon: History, title: 'Replay: real missions vs our prediction' },
-    { id: 'diff', label: L('Scenarios'), icon: GitCompare, title: 'Scenarios: compare A and B' },
+    { id: 'replay', label: L('Mission check'), icon: History, title: 'Mission check: did we predict when real landers lost sunlight?' },
+    { id: 'diff', label: L('Compare dates'), icon: GitCompare, title: 'Compare dates: save two date windows and see what changes' },
   ];
+  const setCollapsed = (v: boolean) => useStore.setState({ leftCollapsed: v });
+  if (collapsed) {
+    return (
+      <aside className="left pn-left pn-rail" aria-label="Sites and results (collapsed)">
+        <IconButton icon={PanelLeftOpen} label="Expand the left panel ( [ )" tip="right" onClick={() => setCollapsed(false)} />
+        <span className="pn-rail-sep" />
+        {tabs.map((t) => (
+          <IconButton key={t.id} icon={t.icon} label={t.title} tip="right" active={t.id === tab} onClick={() => { useStore.setState({ leftTab: t.id, leftCollapsed: false }); }} />
+        ))}
+      </aside>
+    );
+  }
   return (
     <aside className="left pn-left" aria-label="Sites and results">
-      <Tabs className="pn-tabs" tabs={tabs} active={tab} onChange={(k) => useStore.setState({ leftTab: k })} />
+      <div className="pn-tabrow">
+        <Tabs className="pn-tabs" tabs={tabs} active={tab} onChange={(k) => useStore.setState({ leftTab: k })} />
+        {allowCollapse && <IconButton className="pn-collapse" icon={ChevronLeft} label="Collapse the left panel ( [ )" tip="bottom" onClick={() => setCollapsed(true)} />}
+      </div>
       <div className="pn-scroll" role="tabpanel">
         {tab === 'results' && <ResultsTab />}
         {tab === 'sites' && <SitesTab />}

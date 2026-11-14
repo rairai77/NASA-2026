@@ -1,6 +1,6 @@
 // "Plan a traverse": selected site = start; goal picked on the globe or from a site list; path drawn by globe/traverseLayer.ts.
-import { useMemo } from 'react';
-import { CircleCheck, CircleX, Flag, MousePointerClick, Route, RotateCcw, X } from 'lucide-react';
+import { useEffect, useMemo, useRef } from 'react';
+import { CircleAlert, CircleCheck, CircleX, Flag, MousePointerClick, Route, RotateCcw, X } from 'lucide-react';
 import { greatCircleKm } from '../lib/places.ts';
 import { fmtDur } from '../lib/time.ts';
 import { DEFAULT_LIMITS, clearTraverse, runTraverse, setTraverse, useStore, type Target } from '../store.ts';
@@ -30,76 +30,96 @@ export function TraversePanel({ target }: { target: Target }) {
   );
   const dd = result?.status === 'ok' ? fmtDist(result.distanceM) : null;
 
-  return (
-    <div className="pn-pane traverse">
-      <p className="pn-hint">Start: <b>{target.name}</b>. Departs at the timeline cursor (<span className="mono">{new Date(cursor * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC</span>).</p>
+  // when a result or an error appears, scroll it into view inside the inspector's scroll container and move focus to it
+  const resRef = useRef<HTMLDivElement>(null);
+  const seen = useRef<unknown>(result || error ? 'init' : null);
+  useEffect(() => {
+    const key = result ?? error;
+    if (!key || key === seen.current) { if (!key) seen.current = null; return; }
+    seen.current = key;
+    const el = resRef.current, box = el?.closest('.pn-scroll') as HTMLElement | null;
+    if (!el || !box) return;
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const go = () => {
+      const cr = box.getBoundingClientRect(), er = el.getBoundingClientRect();
+      const top = cr.top + 52; // sticky tab bar
+      let delta = 0;
+      if (er.top < top) delta = er.top - top - 8;
+      else if (er.bottom > cr.bottom - 8) delta = Math.min(er.bottom - cr.bottom + 16, er.top - top - 8);
+      if (delta) box.scrollBy({ top: delta, behavior: reduce ? 'auto' : 'smooth' });
+      el.focus({ preventScroll: true });
+    };
+    requestAnimationFrame(go);
+  }, [result, error]);
 
-      <section className="pn-step">
-        <h3 className="ui-section-title">1 {'·'} Goal</h3>
+  return (
+    <div className="pn-pane pn-trv">
+      <p className="pn-hint">Start: <b>{target.name}</b>, departing at the timeline cursor (<span className="mono">{new Date(cursor * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC</span>).</p>
+
+      {goal ? (
+        <div className="pn-goal">
+          <Flag aria-hidden />
+          <div><b>{goal.name ?? 'Goal point'}</b><span className="mono">{goal.lat.toFixed(4)}{'°'}, {goal.lon.toFixed(4)}{'°'} {'·'} {dist.toFixed(2)} km straight line</span></div>
+          <IconButton icon={X} label="Clear goal" size="sm" tip="left" onClick={clearTraverse} />
+        </div>
+      ) : (
         <div className="pn-goal-row">
           <Button size="sm" icon={MousePointerClick} active={picking} onClick={() => setTraverse({ picking: !picking })}>{picking ? 'Click the globe…' : 'Pick on globe'}</Button>
           <select aria-label="Goal site" value="" onChange={(e) => {
             const id = e.target.value; if (!id) return;
             const t = targets[id]; if (t) setTraverse({ goal: { lat: t.lat, lon: t.lon, name: t.name }, picking: false, result: null, error: null });
           }}>
-            <option value="">Another site…</option>
+            <option value="">Goal: another site…</option>
             {options.ranked.length > 0 && <optgroup label="Ranked results">{options.ranked.map((t) => <option key={t.id} value={t.id}>#{t.rank} {t.name}</option>)}</optgroup>}
             <optgroup label="Curated sites">{options.sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</optgroup>
           </select>
         </div>
-        {goal && (
-          <div className="pn-goal">
-            <Flag aria-hidden />
-            <div><b>{goal.name ?? 'Goal point'}</b><span className="mono">{goal.lat.toFixed(4)}{'°'}, {goal.lon.toFixed(4)}{'°'} {'·'} {dist.toFixed(2)} km straight line</span></div>
-            <IconButton icon={X} label="Clear goal" size="sm" tip="left" onClick={clearTraverse} />
-          </div>
-        )}
-        {goal && dist > 15 && <p className="pn-note warn">The planner grid is limited to about 15 km; a goal this far may fail.</p>}
-      </section>
+      )}
+      {goal && dist > 15 && <p className="pn-note warn">The planner grid is limited to about 15 km; a goal this far may fail.</p>}
 
-      <section className="pn-step">
-        <h3 className="ui-section-title">2 {'·'} Limits</h3>
-        <div className="pn-limits">
-          <label>Max slope ({'°'})<NumInput value={limits.maxSlopeDeg} min={1} max={45} width={64} onChange={(v) => setLim({ maxSlopeDeg: v })} /></label>
-          <label>Speed (m/s)<NumInput value={limits.speedMps} min={0.005} step={0.01} width={64} onChange={(v) => v > 0 && setLim({ speedMps: v })} /></label>
-          <label>Max hours<NumInput value={limits.maxHours} min={1} step={6} width={64} onChange={(v) => setLim({ maxHours: v })} /></label>
-        </div>
-        <div className="pn-checks">
+      <div className="pn-limits">
+        <label>Max slope ({'°'})<NumInput value={limits.maxSlopeDeg} min={1} max={45} width={64} onChange={(v) => setLim({ maxSlopeDeg: v })} /></label>
+        <label>Speed (m/s)<NumInput value={limits.speedMps} min={0.005} step={0.01} width={64} onChange={(v) => v > 0 && setLim({ speedMps: v })} /></label>
+        <label>Max hours<NumInput value={limits.maxHours} min={1} step={6} width={64} onChange={(v) => setLim({ maxHours: v })} /></label>
+      </div>
+      <div className="pn-trv-foot">
+        <span className="pn-checks">
           <label className="pn-check"><input type="checkbox" checked={limits.requireSun} onChange={(e) => setLim({ requireSun: e.target.checked })} />Stay in sunlight</label>
           <label className="pn-check"><input type="checkbox" checked={limits.requireEarth} onChange={(e) => setLim({ requireEarth: e.target.checked })} />Stay in Earth view</label>
-        </div>
-      </section>
-
-      <div className="pn-btns">
-        <Button variant="primary" icon={Route} disabled={!goal || busy} onClick={runTraverse}>{busy ? 'Planning…' : 'Plan traverse'}</Button>
-        <Button variant="ghost" size="sm" icon={RotateCcw} onClick={() => setTraverse({ limits: { ...DEFAULT_LIMITS } })}>Reset limits</Button>
+        </span>
+        <Button variant="ghost" size="sm" icon={RotateCcw} onClick={() => setTraverse({ limits: { ...DEFAULT_LIMITS } })}>Reset</Button>
       </div>
-      {error && <p className="pn-err">{error}</p>}
-      {result && (
-        <>
-          <div className={`pn-verdict ${result.status === 'ok' ? 'yes' : 'no'}`} role="status">
-            {result.status === 'ok' ? <CircleCheck aria-hidden /> : <CircleX aria-hidden />}
-            <div>
-              <b>{result.status === 'ok' ? 'Route found' : result.status === 'no_path' ? 'No path' : 'Timed out'}</b>
-              {status && <small>{status}</small>}
-            </div>
-          </div>
-          {result.status === 'ok' && dd && (
-            <>
-              <div className="pn-stats pn-stats--4">
-                <Stat label="Distance" value={dd.v} unit={dd.u} title="Distance along path" />
-                <Stat label="Duration" value={fmtDur(result.durationS)} title="Duration" />
-                <Stat label="In sunlight" value={Math.round(result.sunlitFrac * 100)} unit="%" tone="sun" title="Time in sunlight" />
-                <Stat label="Earth view" value={Math.round(result.earthFrac * 100)} unit="%" tone="earth" title="Time with Earth in view" />
+
+      <Button variant="primary" icon={Route} disabled={!goal || busy} onClick={runTraverse}>{busy ? 'Planning…' : 'Plan traverse'}</Button>
+
+      <div ref={resRef} tabIndex={-1} className="pn-trv-res" role={error ? 'alert' : 'status'} aria-live={error ? 'assertive' : 'polite'} aria-atomic="true">
+        {error && <p className="pn-err-box"><CircleAlert aria-hidden />{error}</p>}
+        {result && (
+          <>
+            <div className={`pn-verdict pn-verdict--row ${result.status === 'ok' ? 'yes' : 'no'}`}>
+              {result.status === 'ok' ? <CircleCheck aria-hidden /> : <CircleX aria-hidden />}
+              <div>
+                <b>{result.status === 'ok' ? 'Route found' : result.status === 'no_path' ? 'No path' : 'Timed out'}</b>
+                {status && <small>{status}</small>}
               </div>
-              <p className="pn-small">Planner cell <span className="mono">{result.cellM} m</span></p>
-            </>
-          )}
-          {result.status === 'no_path' && limits.maxSlopeDeg < 35 && (
-            <Button size="sm" onClick={() => { setLim({ maxSlopeDeg: Math.min(35, limits.maxSlopeDeg + 5) }); setTimeout(runTraverse, 0); }}>Retry with {Math.min(35, limits.maxSlopeDeg + 5)}{'°'}</Button>
-          )}
-        </>
-      )}
+            </div>
+            {result.status === 'ok' && dd && (
+              <>
+                <div className="pn-stats pn-stats--4 pn-stats--flat">
+                  <Stat label="Distance" value={dd.v} unit={dd.u} title="Distance along path" />
+                  <Stat label="Duration" value={fmtDur(result.durationS)} title="Duration" />
+                  <Stat label="In sunlight" value={Math.round(result.sunlitFrac * 100)} unit="%" tone="sun" title="Time in sunlight" />
+                  <Stat label="Earth view" value={Math.round(result.earthFrac * 100)} unit="%" tone="earth" title="Time with Earth in view" />
+                </div>
+                <p className="pn-small">Planner cell <span className="mono">{Math.round(result.cellM)} m</span></p>
+              </>
+            )}
+            {result.status === 'no_path' && limits.maxSlopeDeg < 35 && (
+              <Button size="sm" onClick={() => { setLim({ maxSlopeDeg: Math.min(35, limits.maxSlopeDeg + 5) }); setTimeout(runTraverse, 0); }}>Retry with {Math.min(35, limits.maxSlopeDeg + 5)}{'°'}</Button>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

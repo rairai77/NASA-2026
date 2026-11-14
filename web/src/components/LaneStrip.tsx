@@ -2,9 +2,9 @@
 import { useEffect, useRef } from 'react';
 import type { VisResult } from '../engine/api.ts';
 import { useStore } from '../store.ts';
+import { palette, useTheme } from '../lib/theme.ts';
 
 const LANE = 7, GAP = 3, H = LANE * 3 + GAP * 2, W = 320;
-const TONE = { sun: '#F5B700', earth: '#4FA3FF', both: '#FFFFFF' };
 
 function drawLanes(c: HTMLCanvasElement, v: VisResult | null) {
   const dpr = window.devicePixelRatio || 1;
@@ -12,8 +12,9 @@ function drawLanes(c: HTMLCanvasElement, v: VisResult | null) {
   const g = c.getContext('2d')!;
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, W, H);
+  const TONE = palette();
   const lanes = [0, LANE + GAP, 2 * (LANE + GAP)];
-  g.fillStyle = 'rgba(255,255,255,0.05)';
+  g.fillStyle = TONE.laneBg;
   for (const y of lanes) g.fillRect(0, y, W, LANE);
   if (!v) return;
   const n = v.t.length;
@@ -38,7 +39,8 @@ function Tick({ win }: { win: [number, number] }) {
 
 export function LaneStrip({ vis, win, labels = true, label }: { vis: VisResult | null; win: [number, number]; labels?: boolean; label?: string }) {
   const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => { if (ref.current) drawLanes(ref.current, vis); }, [vis]);
+  const theme = useTheme();
+  useEffect(() => { if (ref.current) drawLanes(ref.current, vis); }, [vis, theme]);
   return (
     <div className="pn-strip" style={{ ['--strip-h' as string]: `${H}px` }}>
       {labels && <span className="pn-strip-l" aria-hidden><span>Sun</span><span>Earth</span><span>Both</span></span>}

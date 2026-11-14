@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { CircleAlert, Info, X } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import { CircleAlert, Info, Moon, Sun, X } from 'lucide-react';
+import { toggleTheme, useTheme } from '../lib/theme.ts';
 import { useStore } from '../store.ts';
 import { ALIASES, TIPS } from '../lib/educatorText.ts';
 
@@ -10,9 +12,9 @@ export function Why({ id }: { id: string }) {
   const key = ALIASES[id] ?? id;
   if (!educator || !WHY[key]) return null;
   return (
-    <span className="why" tabIndex={0} aria-label={`Why? ${WHY[key]}`}>
-      ?<span className="why-tip" role="tooltip">{WHY[key]}</span>
-    </span>
+    <Tooltip content={WHY[key]} side="bottom" wrap>
+      <span className="why" tabIndex={0} aria-label={`Why? ${WHY[key]}`}>?</span>
+    </Tooltip>
   );
 }
 
@@ -69,6 +71,25 @@ export function Toast() {
   return <div className={`toast ${bad ? 'bad' : ''}`} role="status" key={t.id}><Ic aria-hidden className="toast-ico" /><span>{t.msg}</span><button className="toast-x" aria-label="Dismiss" onClick={() => useStore.setState({ toast: null })}><X aria-hidden /></button></div>;
 }
 
+/** Mouse wheel scrolls a horizontal scroller sideways (vertical gestures only, and only while there is room in that direction). Trackpad swipes are left alone. */
+export function useWheelHScroll(ref: { current: HTMLElement | null }) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const h = (e: WheelEvent) => {
+      if (e.ctrlKey || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      const max = el.scrollWidth - el.clientWidth;
+      if (max <= 1) return;
+      const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+      if (dy > 0 ? el.scrollLeft >= max - 1 : el.scrollLeft <= 1) return;
+      e.preventDefault();
+      el.scrollLeft += dy;
+    };
+    el.addEventListener('wheel', h, { passive: false });
+    return () => el.removeEventListener('wheel', h);
+  }, [ref]);
+}
+
 export function useEscape(active: boolean, fn: () => void) {
   useEffect(() => {
     if (!active) return;
@@ -106,8 +127,66 @@ export function IconButton({ icon: Ic, label, size = 'md', solid, active, tip = 
   return <Tooltip content={label} side={tip}>{btn}</Tooltip>;
 }
 
-export function Tooltip({ content, side = 'top', wrap, children }: { content: ReactNode; side?: 'top' | 'bottom' | 'left' | 'right'; wrap?: boolean; children: ReactNode }) {
-  return <span className={`ui-tip ui-tip--${side}`}>{children}<span role="tooltip" className={`ui-tip-body ${wrap ? 'wrap' : ''}`}>{content}</span></span>;
+type Side = 'top' | 'bottom' | 'left' | 'right';
+const TIP_GAP = 8, TIP_MARGIN = 8;
+
+/** Place a bubble of size w x h next to the trigger rect r: preferred side, else the opposite, else a perpendicular one; always clamped to the viewport. */
+export function placeTip(r: DOMRect, w: number, h: number, side: Side, vw: number, vh: number): { x: number; y: number } {
+  const fits: Record<Side, boolean> = {
+    top: r.top - TIP_GAP - h >= TIP_MARGIN, bottom: r.bottom + TIP_GAP + h <= vh - TIP_MARGIN,
+    left: r.left - TIP_GAP - w >= TIP_MARGIN, right: r.right + TIP_GAP + w <= vw - TIP_MARGIN,
+  };
+  const opp: Record<Side, Side> = { top: 'bottom', bottom: 'top', left: 'right', right: 'left' };
+  const order: Side[] = [side, opp[side], ...(side === 'top' || side === 'bottom' ? ['right', 'left'] as Side[] : ['bottom', 'top'] as Side[])];
+  const use = order.find((s) => fits[s]) ?? side;
+  let x: number, y: number;
+  if (use === 'top') { x = r.left + r.width / 2 - w / 2; y = r.top - TIP_GAP - h; }
+  else if (use === 'bottom') { x = r.left + r.width / 2 - w / 2; y = r.bottom + TIP_GAP; }
+  else if (use === 'left') { x = r.left - TIP_GAP - w; y = r.top + r.height / 2 - h / 2; }
+  else { x = r.right + TIP_GAP; y = r.top + r.height / 2 - h / 2; }
+  x = Math.max(TIP_MARGIN, Math.min(x, vw - TIP_MARGIN - w));
+  y = Math.max(TIP_MARGIN, Math.min(y, vh - TIP_MARGIN - h));
+  return { x, y };
+}
+
+/** Wrap any element. The bubble is rendered in a portal on <body>, positioned from the trigger rect (flips and clamps to the viewport),
+ *  shown after a short hover delay, immediately on keyboard focus, hidden on scroll, resize, Escape and click. */
+export function Tooltip({ content, side = 'top', wrap, children }: { content: ReactNode; side?: Side; wrap?: boolean; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const trig = useRef<HTMLSpanElement>(null);
+  const tip = useRef<HTMLSpanElement>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const id = useId();
+  const hide = () => { clearTimeout(timer.current); setOpen(false); };
+  const showSoon = () => { clearTimeout(timer.current); timer.current = setTimeout(() => setOpen(true), 350); };
+  useEffect(() => () => clearTimeout(timer.current), []);
+  useEffect(() => {
+    if (!open) return;
+    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    const off = () => setOpen(false);
+    window.addEventListener('keydown', k); window.addEventListener('scroll', off, true); window.addEventListener('resize', off);
+    return () => { window.removeEventListener('keydown', k); window.removeEventListener('scroll', off, true); window.removeEventListener('resize', off); };
+  }, [open]);
+  useLayoutEffect(() => {
+    const t = trig.current, b = tip.current;
+    if (!open || !t || !b) return;
+    const { x, y } = placeTip(t.getBoundingClientRect(), b.offsetWidth, b.offsetHeight, side, window.innerWidth, window.innerHeight);
+    b.style.left = `${x}px`; b.style.top = `${y}px`;
+  }, [open, side, content]);
+  return (
+    <span ref={trig} className="ui-tip" aria-describedby={open ? id : undefined}
+      onPointerEnter={(e) => { if (e.pointerType === 'mouse') showSoon(); }} onPointerLeave={hide} onPointerDown={hide}
+      onFocus={(e) => { if ((e.target as HTMLElement).matches?.(':focus-visible')) { clearTimeout(timer.current); setOpen(true); } }} onBlur={hide}>
+      {children}
+      {open && createPortal(<span ref={tip} id={id} role="tooltip" className={`ui-tip-body ${wrap ? 'wrap' : ''}`}>{content}</span>, document.body)}
+    </span>
+  );
+}
+
+/** Sun / Moon button for the top bar. */
+export function ThemeToggle() {
+  const theme = useTheme();
+  return <IconButton icon={theme === 'dark' ? Sun : Moon} label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} onClick={toggleTheme} />;
 }
 
 export function Segmented<T extends string>({ options, value, onChange, label }: {
@@ -127,10 +206,19 @@ export function Segmented<T extends string>({ options, value, onChange, label }:
 export function Tabs<T extends string>({ tabs, active, onChange, className = '' }: {
   tabs: { id: T; label: ReactNode; icon?: IconType; count?: number | string; title?: string }[]; active: T; onChange: (id: T) => void; className?: string;
 }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useWheelHScroll(ref);
+  // keep the active tab visible when the bar scrolls horizontally (never touches vertical scroll)
+  useEffect(() => {
+    const bar = ref.current, on = bar?.querySelector<HTMLElement>('button.on');
+    if (!bar || !on) return;
+    const l = on.offsetLeft - 8, r = on.offsetLeft + on.offsetWidth + 8;
+    if (l < bar.scrollLeft) bar.scrollLeft = l; else if (r > bar.scrollLeft + bar.clientWidth) bar.scrollLeft = r - bar.clientWidth;
+  }, [active]);
   return (
-    <div className={`ui-tabs ${className}`} role="tablist">
+    <div ref={ref} className={`ui-tabs ${className}`} role="tablist">
       {tabs.map((t) => (
-        <button key={t.id} type="button" role="tab" title={t.title} aria-selected={t.id === active} className={t.id === active ? 'on' : ''} onClick={() => onChange(t.id)}>
+        <button key={t.id} type="button" role="tab" title={t.title} aria-label={t.title} aria-selected={t.id === active} className={t.id === active ? 'on' : ''} onClick={() => onChange(t.id)}>
           {t.icon && <t.icon aria-hidden />}{t.label}{t.count != null && <span className="ui-count">{t.count}</span>}
         </button>
       ))}

@@ -36,7 +36,7 @@ export function Welcome() {
         <span className="welcome-logo" aria-hidden />
         <h1 id="welcome-h">Where on the Moon do the Sun and Earth stay up?</h1>
         <p className="welcome-lead">Landers need sunlight for power and a line of sight to Earth for radio. At the lunar poles both depend on mountains and crater rims, so we compute it from real terrain and ephemerides.</p>
-        <p className="welcome-lead">Ask a question in plain words, or build one with chips, and get ranked sites you can inspect, replay and stand on.</p>
+        <p className="welcome-lead">Ask a question in plain words, or build one with chips, and get ranked sites you can inspect, check against real missions and stand on.</p>
         <div className="welcome-ex" role="group" aria-label="Example questions">
           {EXAMPLE_LIST.slice(0, 3).map((e) => (
             <button key={e.label} className="welcome-card" onClick={() => { dismissWelcome(); runWhenReady(() => parseText(e.text)); }}>
@@ -45,7 +45,7 @@ export function Welcome() {
           ))}
         </div>
         <div className="welcome-actions">
-          <Button variant="primary" size="lg" icon={Compass} onClick={() => { dismissWelcome(); runWhenReady(() => useStore.setState({ educator: true, tourStep: 0 })); }}>Take the 60-second tour</Button>
+          <Button variant="primary" size="lg" icon={Compass} onClick={() => { dismissWelcome(); runWhenReady(() => useStore.setState({ tourStep: 0 })); }}>Take the 60-second tour</Button>
           <Button size="lg" onClick={dismissWelcome}>Explore on my own</Button>
         </div>
         <button className="welcome-link" onClick={() => { dismissWelcome(); useStore.setState({ validationOpen: true }); }}><ShieldCheck aria-hidden />How we know it{'’'}s right</button>

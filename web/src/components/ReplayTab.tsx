@@ -16,8 +16,8 @@ export function ReplayTab() {
   return (
     <div className="pn-body">
       <div className="pn-head">
-        <h2 className="pn-h">Mission replay</h2>
-        <p className="pn-sub">Pick a real mission. We predict local sunset with our engine and compare it with the reported end of operations.</p>
+        <h2 className="pn-h">Mission check</h2>
+        <p className="pn-sub">Did the model predict when real landers lost sunlight? Pick a mission to compare our predicted sunset with when it actually stopped.</p>
       </div>
       {replay && (
         <section className="pn-replay" aria-live="polite">
@@ -26,17 +26,17 @@ export function ReplayTab() {
             <Tag tone={notSunset ? 'warn' : undefined}>{KIND_LABEL[replay.endKind] ?? (replay.endKind || 'End')}</Tag>
           </header>
           <div className="pn-pvr">
-            <div><span className="pn-k">Predicted sunset</span><span className="pn-v mono">{replay.predSunset ? fmtUTC(replay.predSunset) : 'none in window'}</span></div>
+            <div><span className="pn-k">Our predicted sunset</span><span className="pn-v mono">{replay.predSunset ? fmtUTC(replay.predSunset) : 'none in window'}</span></div>
             <div><span className="pn-k">Reported end</span><span className="pn-v mono">{replay.reportedEnd ? fmtUTC(replay.reportedEnd) : '—'}</span></div>
           </div>
           <div className="pn-delta">
-            <span className="pn-k">{'Δ'} predicted {'−'} reported</span>
+            <span className="pn-delta-lbl"><span className="pn-v">Predicted sunset vs reported end:</span><span className="pn-k">+ means we predicted sunset later than reality</span></span>
             <span className={`pn-delta-b mono ${dTone ?? ''}`}>{delta === null ? '—' : `${delta >= 0 ? '+' : ''}${delta.toFixed(1)} h`}</span>
           </div>
           <p className="pn-small"><CalendarClock aria-hidden /> Landed {fmtUTC(replay.landed)} {'·'} {replay.source === 'live' ? 'computed live in your browser' : 'precomputed (validation run)'}</p>
           {replay.outsideIndex && <p className="pn-note"><TriangleAlert aria-hidden />This mission predates the polar index (2026{'–'}2030), so no site ranking is run. The timeline shows the mission site only.</p>}
           {notSunset
-            ? <p className="pn-note warn"><TriangleAlert aria-hidden />Not a sunset end: {replay.endReason}. The {'Δ'} is not a prediction error.</p>
+            ? <p className="pn-note warn"><TriangleAlert aria-hidden />Not a sunset end: {replay.endReason}. The difference is not a prediction error.</p>
             : <p className="pn-small">{replay.endReason}</p>}
         </section>
       )}

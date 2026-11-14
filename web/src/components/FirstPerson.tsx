@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { countdowns, sampleAt, type Sample } from '../lib/countdown.ts';
 import { fmtUTC } from '../lib/time.ts';
 import { useStore, windowOf } from '../store.ts';
 import { COLORS } from './Timeline.tsx';
-import { Globe as GlobeIcon, Sun, X } from 'lucide-react';
+import { Globe as GlobeIcon, Image as ImageIcon, Mountain, Sun, X } from 'lucide-react';
+import { getFirstPersonView, getFirstPersonViewer, lookAt, onFirstPersonView, setFov as setFov3d, setSkyline } from '../globe/firstPerson3d.ts';
 import { placeFor, shortName } from '../lib/places.ts';
 import { Button, IconButton, Segmented, Tag } from './ui.tsx';
 
@@ -234,6 +235,70 @@ function drawEarth(g: CanvasRenderingContext2D, x: number, y: number, R: number,
   g.restore();
 }
 
+// ---- 3D mode: bottom compass ribbon (heading, N/E/S/W, Sun and Earth azimuth markers) ------------------------
+const fpView = () => getFirstPersonView();
+let lastSnap = fpView();
+function snapView() {
+  const v = fpView();
+  if (v.headingDeg !== lastSnap.headingDeg || v.pitchDeg !== lastSnap.pitchDeg || v.fovDeg !== lastSnap.fovDeg || v.skyline !== lastSnap.skyline || v.active !== lastSnap.active) lastSnap = v;
+  return lastSnap;
+}
+function useFpView() { return useSyncExternalStore(onFirstPersonView, snapView); }
+
+function Ribbon({ sunAz, earthAz }: { sunAz?: number; earthAz?: number }) {
+  const v = useFpView();
+  const ref = useRef<HTMLCanvasElement>(null);
+  const [w, setW] = useState(900);
+  useEffect(() => {
+    const c = ref.current;
+    if (!c) return;
+    const ro = new ResizeObserver(() => setW(Math.floor(c.clientWidth)));
+    ro.observe(c); setW(c.clientWidth);
+    return () => ro.disconnect();
+  }, []);
+  useEffect(() => {
+    const c = ref.current;
+    if (!c) return;
+    const H = 40, dpr = window.devicePixelRatio || 1;
+    c.width = w * dpr; c.height = H * dpr;
+    const g = c.getContext('2d')!;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, H);
+    g.fillStyle = 'rgba(5,7,12,0.78)'; g.fillRect(0, 0, w, H);
+    g.fillStyle = 'rgba(255,255,255,0.12)'; g.fillRect(0, 0, w, 1);
+    // horizontal pixels per degree: the ribbon spans the horizontal FOV
+    const ppd = w / v.fovDeg, lo = v.headingDeg - v.fovDeg / 2;
+    const names: Record<number, string> = { 0: 'N', 45: 'NE', 90: 'E', 135: 'SE', 180: 'S', 225: 'SW', 270: 'W', 315: 'NW' };
+    g.textAlign = 'center';
+    for (let a = Math.floor(lo / 5) * 5; a <= v.headingDeg + v.fovDeg / 2 + 5; a += 5) {
+      const x = w / 2 + (a - v.headingDeg) * ppd, az = ((a % 360) + 360) % 360, major = az % 15 === 0;
+      g.strokeStyle = 'rgba(200,210,230,0.75)'; g.lineWidth = 1;
+      g.beginPath(); g.moveTo(x, 1); g.lineTo(x, major ? 11 : 6); g.stroke();
+      if (az % 45 === 0) { g.fillStyle = az % 90 === 0 ? '#fff' : '#dbe2f1'; g.font = `700 ${az % 90 === 0 ? 15 : 12}px "Inter Variable", ui-sans-serif, system-ui, sans-serif`; g.fillText(names[az], x, 30); }
+      else if (major && ppd > 5) { g.fillStyle = '#a3adc4'; g.font = '500 11px "JetBrains Mono", ui-monospace, monospace'; g.fillText(`${az}°`, x, 30); }
+    }
+    for (const [az, col, ch] of [[sunAz, COLORS.sun, 'Sun'], [earthAz, COLORS.earth, 'Earth']] as [number | undefined, string, string][]) {
+      if (az === undefined) continue;
+      const dx = wrapDelta(az - v.headingDeg); let x = w / 2 + dx * ppd;
+      const off = x < 14 || x > w - 14; // pinned to the edge with an arrow when outside the view
+      x = Math.max(14, Math.min(w - 14, x));
+      g.fillStyle = col; g.beginPath();
+      if (!off) { g.moveTo(x, 1); g.lineTo(x - 5, 11); g.lineTo(x + 5, 11); }
+      else { const s2 = dx > 0 ? 1 : -1; g.moveTo(x + 6 * s2, 6); g.lineTo(x - 2 * s2, 1); g.lineTo(x - 2 * s2, 11); }
+      g.fill();
+      g.font = '600 10.5px "Inter Variable", ui-sans-serif, system-ui, sans-serif'; g.fillText(ch, x, 39);
+    }
+    // centre mark
+    g.fillStyle = '#fff'; g.fillRect(w / 2 - 0.5, H - 7, 1, 7);
+  }, [w, v.headingDeg, v.fovDeg, sunAz, earthAz]);
+  return (
+    <div className="fp-ribbon" aria-hidden>
+      <canvas ref={ref} style={{ width: '100%', height: 40 }} />
+      <span className="fp-hdg">{Math.round(((v.headingDeg % 360) + 360) % 360)}{'°'}</span>
+    </div>
+  );
+}
+
 export function FirstPerson() {
   const open = useStore((s) => s.fpOpen);
   const id = useStore((s) => s.selected);
@@ -249,6 +314,8 @@ export function FirstPerson() {
   const [fov, setFov] = useState(90);
   const [yFrac, setYFrac] = useState(0.7);
   const [vex, setVex] = useState<1 | 3>(3);
+  const [mode, setMode] = useState<'3d' | '2d'>('3d');
+  const v3 = useFpView();
   const drag = useRef<{ x: number; y: number; az: number; yf: number } | null>(null);
   const win = useMemo(() => windowOf(query), [query]);
 
@@ -257,9 +324,9 @@ export function FirstPerson() {
   useEffect(() => {
     if (!open || !id || !d?.vis || initFor.current === id) return;
     const s = sampleAt(d.vis, cursor);
-    if (s) { if (s.sunUp || s.sunEl > -3) center(s.sunAz, s.sunEl); else center(s.earthAz, s.earthEl); initFor.current = id; }
+    if (s && mode === '2d') { if (s.sunUp || s.sunEl > -3) center(s.sunAz, s.sunEl); else center(s.earthAz, s.earthEl); initFor.current = id; }
   }, [open, id, d?.vis]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (!open) initFor.current = null; }, [open]);
+  useEffect(() => { if (!open) { initFor.current = null; setMode('3d'); } }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -275,12 +342,14 @@ export function FirstPerson() {
 
   const now = sampleAt(d?.vis, cursor);
   const center = (az: number, el: number) => {
+    const v3d = getFirstPersonViewer();
+    if (mode === '3d' && v3d) { lookAt(v3d, az, Math.max(-5, el)); return; }
     setLookAz(az);
     setYFrac(Math.max(0.2, Math.min(1.4, 0.55 + (el * vex * size.W) / fov / size.H)));
   };
   useEffect(() => {
     const c = canvasRef.current;
-    if (!open || !c || !d?.horizon || !now) return;
+    if (!open || mode !== '2d' || !c || !d?.horizon || !now) return;
     const dpr = window.devicePixelRatio || 1;
     c.width = size.W * dpr; c.height = size.H * dpr;
     const g = c.getContext('2d')!;
@@ -292,41 +361,71 @@ export function FirstPerson() {
   const cd = countdowns(d?.vis, cursor, win[1]);
   const place = t.kind === 'site' ? shortName(t.name) : placeFor(t.lat, t.lon, sites).title;
   const close = () => useStore.setState({ fpOpen: false });
+  const is3d = mode === '3d';
+  const toggleMode = () => {
+    if (is3d) { setLookAz(v3.headingDeg); setYFrac(0.7); setMode('2d'); }
+    else setMode('3d');
+  };
+  const viewer3d = getFirstPersonViewer();
+  const info = (
+    <div className="fp-card">
+      <div>
+        <h2>{t.rank ? `#${t.rank} ` : ''}{place}</h2>
+        <div className="fp-sub">{t.lat.toFixed(3)}{'°'}, {t.lon.toFixed(3)}{'°'} {'·'} {query.height_m} m above terrain</div>
+      </div>
+      {cd && (
+        <div className="fp-cds">
+          <div className={`fp-cd sun ${cd.sunSoon ? 'soon' : ''}`}><Sun aria-hidden />{cd.sun}</div>
+          <div className={`fp-cd earth ${cd.earthSoon ? 'soon' : ''}`}><GlobeIcon aria-hidden />{cd.earth}</div>
+        </div>
+      )}
+      <div className="fp-meta">
+        <span>{fmtUTC(cursor)}</span>
+        {now && <span>Sun {now.sunEl.toFixed(2)}{'°'}{now.sunUp ? '' : ' (down)'} {'·'} Earth {now.earthEl.toFixed(1)}{'°'}{now.earthUp ? '' : ' (hidden)'}{now.eclipseFrac > 0 ? ` · eclipse ${Math.round(now.eclipseFrac * 100)}%` : ''}</span>}
+      </div>
+    </div>
+  );
   return (
-    <div className="fp" ref={hostRef}>
-      <canvas
-        ref={canvasRef} style={{ width: '100%', height: '100%', touchAction: 'none', cursor: 'grab' }}
-        onPointerDown={(e) => { drag.current = { x: e.clientX, y: e.clientY, az: lookAz, yf: yFrac }; (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); }}
-        onPointerMove={(e) => { if (drag.current) setYFrac(Math.max(0.15, Math.min(1.6, drag.current.yf + (e.clientY - drag.current.y) / size.H))); if (drag.current) setLookAz((((drag.current.az - ((e.clientX - drag.current.x) * fov) / size.W) % 360) + 360) % 360); }}
-        onPointerUp={() => { drag.current = null; }}
-        onWheel={(e) => setFov((f) => Math.min(120, Math.max(20, f * Math.exp(e.deltaY * 0.001))))}
-        aria-label="First-person view from the site: drag to look around, wheel to zoom"
-      />
-      <div className="fp-card">
-        <div>
-          <h2>{t.rank ? `#${t.rank} ` : ''}{place}</h2>
-          <div className="fp-sub">{t.lat.toFixed(3)}{'\u00b0'}, {t.lon.toFixed(3)}{'\u00b0'} {'\u00b7'} {query.height_m} m above terrain</div>
+    <div className={`fp ${is3d ? 'fp3d' : 'fp2d'}`} ref={hostRef}>
+      {!is3d && (
+        <canvas
+          ref={canvasRef} style={{ width: '100%', height: '100%', touchAction: 'none', cursor: 'grab' }}
+          onPointerDown={(e) => { drag.current = { x: e.clientX, y: e.clientY, az: lookAz, yf: yFrac }; (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); }}
+          onPointerMove={(e) => { if (drag.current) setYFrac(Math.max(0.15, Math.min(1.6, drag.current.yf + (e.clientY - drag.current.y) / size.H))); if (drag.current) setLookAz((((drag.current.az - ((e.clientX - drag.current.x) * fov) / size.W) % 360) + 360) % 360); }}
+          onPointerUp={() => { drag.current = null; }}
+          onWheel={(e) => setFov((f) => Math.min(120, Math.max(20, f * Math.exp(e.deltaY * 0.001))))}
+          aria-label="Projected panorama from the site: drag to look around, wheel to zoom"
+        />
+      )}
+      {info}
+      <div className="fp-close"><IconButton solid tip="left" icon={X} label="Exit first-person view (Esc)" onClick={close} /></div>
+      <div className="fp-bottom">
+        {!is3d && vex === 3 && <Tag tone="warn">Vertical scale exaggerated 3{'\u00d7'} (Sun and Earth sizes stay true)</Tag>}
+        <div className="fp-note">
+          <span>drag to look {'\u00b7'} wheel to zoom ({(is3d ? v3.fovDeg : fov).toFixed(0)}{'\u00b0'} FOV) {'\u00b7'} scrub the timeline below</span>
+          {is3d && v3.skyline && <span><b>Teal line = computed skyline (LOLA)</b>, the authoritative horizon; distant 3D terrain is rendered coarser, so ridges can differ.</span>}
         </div>
-        {cd && (
-          <div className="fp-cds">
-            <div className={`fp-cd sun ${cd.sunSoon ? 'soon' : ''}`}><Sun aria-hidden />{cd.sun}</div>
-            <div className={`fp-cd earth ${cd.earthSoon ? 'soon' : ''}`}><GlobeIcon aria-hidden />{cd.earth}</div>
+        <div className="fp-row">
+          <div className="fp-ctl">
+            <Button size="sm" icon={Sun} onClick={() => now && center(now.sunAz, now.sunEl)}>Look at Sun</Button>
+            <Button size="sm" icon={GlobeIcon} onClick={() => now && center(now.earthAz, now.earthEl)}>Look at Earth</Button>
+            {is3d ? (
+              <>
+                <label className="fp-fov" title="Field of view (mouse wheel)">
+                  <span>FOV {v3.fovDeg.toFixed(0)}{'\u00b0'}</span>
+                  <input type="range" min={15} max={100} step={1} value={v3.fovDeg} aria-label="Field of view" onChange={(e) => viewer3d && setFov3d(viewer3d, Number(e.target.value))} />
+                </label>
+                <Button size="sm" icon={Mountain} active={v3.skyline} onClick={() => viewer3d && setSkyline(viewer3d, !v3.skyline)} title="Computed skyline overlay from LOLA elevation data">Skyline</Button>
+              </>
+            ) : (
+              <Segmented label="Vertical exaggeration" value={String(vex) as '1' | '3'} onChange={(x) => setVex(x === '1' ? 1 : 3)} options={[{ value: '1', label: '1\u00d7' }, { value: '3', label: '3\u00d7' }]} />
+            )}
+            <Button size="sm" icon={ImageIcon} active={!is3d} onClick={toggleMode} title="Switch between the 3D view and the projected 2D panorama">2D panorama</Button>
           </div>
-        )}
-        <div className="fp-meta">
-          <span>{fmtUTC(cursor)}</span>
-          {now && <span>Sun {now.sunEl.toFixed(2)}{'\u00b0'}{now.sunUp ? '' : ' (down)'} {'\u00b7'} Earth {now.earthEl.toFixed(1)}{'\u00b0'}{now.earthUp ? '' : ' (hidden)'}{now.eclipseFrac > 0 ? ` \u00b7 eclipse ${Math.round(now.eclipseFrac * 100)}%` : ''}</span>}
         </div>
       </div>
-      <div className="fp-close"><IconButton solid tip="left" icon={X} label="Close first-person view (Esc)" onClick={close} /></div>
-      <div className="fp-ctl">
-        <Button size="sm" icon={Sun} onClick={() => now && center(now.sunAz, now.sunEl)}>Look at Sun</Button>
-        <Button size="sm" icon={GlobeIcon} onClick={() => now && center(now.earthAz, now.earthEl)}>Look at Earth</Button>
-        <Segmented label="Vertical exaggeration" value={String(vex) as '1' | '3'} onChange={(v) => setVex(v === '1' ? 1 : 3)} options={[{ value: '1', label: '1\u00d7' }, { value: '3', label: '3\u00d7' }]} />
-      </div>
-      <div className="fp-hint">drag to look {'\u00b7'} wheel to zoom ({fov.toFixed(0)}{'\u00b0'} FOV) {'\u00b7'} scrub the timeline below</div>
-      {vex === 3 && <div className="fp-flag"><Tag tone="warn">Vertical scale exaggerated 3{'\u00d7'} (Sun and Earth sizes stay true)</Tag></div>}
-      {!d?.horizon && <div className="fp-flag"><Tag tone="info">Loading horizon{'\u2026'}</Tag></div>}
+      {is3d && <Ribbon sunAz={now?.sunAz} earthAz={now?.earthAz} />}
+      {!d?.horizon && <div className="fp-flag"><Tag tone="info">Loading horizon{'…'}</Tag></div>}
     </div>
   );
 }

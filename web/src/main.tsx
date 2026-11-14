@@ -10,5 +10,8 @@ import './panels.css';
 import './globe.css';
 import './responsive.css';
 import App from './App.tsx';
+import { initTheme } from './lib/theme.ts';
+
+initTheme();
 
 createRoot(document.getElementById('root')!).render(<StrictMode><App /></StrictMode>);
