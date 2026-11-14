@@ -120,6 +120,17 @@ Topocentric direction to a body from a site at position `P` (km, MOON_ME):
   band shorter), layout `[row][col][az]` int16, elevation = value * 0.01°,
   az index k = k*360/n_az degrees. Invalid cells hold -32768.
 
+### 3b. Global index (coarse, `data/global/`)
+
+Same files and bit layout as §3 with an equirect grid: `manifest.json` has `grid: { "proj": "equirect", "ppd": 3,
+"lat_max": 90, "lon_min": -180, "nx": 1080, "ny": 540 }`, `step_s` 21600 (6 h), `n_az` 72 (5 deg), `max_dist_km` 150,
+`horizons` bands (90 rows each, int16 0.01 deg) and `months` (2026-01..2030-12, 2 words per cell). Cell `(i, j)` centre
+is `lat = lat_max - (i+0.5)/ppd`, `lon = lon_min + (j+0.5)/ppd`; `c = i*nx + j`. `static.f32` columns:
+`lat, lon, elev_m, slope_deg (~1 km baseline from g0), sun_frac_5yr, earth_frac_5yr` (no psr/fault columns, so
+filters on those fail). Built by `pipeline/global_index.py` from g0/g1/g2 only. Engine loading: `loadGlobalManifest`,
+`loadGlobalStatic`, `addGlobalMonth(month, raw)`, `addGlobalHorizonBand(band, raw)`, `globalMonthsNeeded(tStart, tEnd)`;
+`rankCoarse`/`rankRefine` pick the index from `query.region` (see §6).
+
 ## 4. Catalogs (hand-curated sources in `data-src/`, copied to `data/`)
 
 `data/sites.json`: array of
@@ -165,6 +176,9 @@ Window metrics (over a time window, from a 15-minute series unless noted):
 | `min_sun_el_deg` | deg | minimum Sun elevation while Sun up |
 | `sun_disc_frac_mean` | 0-1 | mean visible fraction of the Sun's disc while Sun up |
 | `eclipse_hours` | h | hours where Earth covers part of the Sun's disc while the Sun is above the horizon |
+| `comms_hours` | h | hours with Earth up AND >= 1 DSN complex has the Moon >= 10 deg above its horizon (only when DSN is loaded or `relay`; with `relay` = window hours) |
+| `longest_comms_h` | h | longest continuous comms run (same conditions) |
+| `marginal_hours` | h | Earth up but its centre < 1.5 deg above the local skyline (knife-edge diffraction regime, "marginal link") |
 | `energy_wh` | Wh | (power model) energy over the window |
 | `battery_wh_needed` | Wh | (power model) load × longest_dark_h / depth of discharge |
 
@@ -191,6 +205,11 @@ Runs touching the window edges count only the part inside the window.
 }
 ```
 
+- `relay` (optional, default false): assume continuous relay coverage; `comms_hours`/`longest_comms_h` then equal the window length.
+- `region.type`: also `bbox` (`west`, `south`, `east`, `north`, degrees; west > east wraps the antimeridian) and `global`.
+  Polar regions inside the polar cap (max_lat <= index max_lat) and circles fully inside it use the polar index; every
+  other region uses the coarse **global index** (below). Global results carry `coarse: true` (also on every item) and
+  `stats.global: true`; their resolution is ~10 km cells (`resolutionM`), horizons are the stored 72-az / 150 km ones.
 - `power` (optional): a power-model `Panel` (see §7 `power`). When present, `rankRefine`/`rankPoints`
   add `energy_wh` and `battery_wh_needed` to each result's metrics, so they can be used in filters and objectives
   (they are not available in the coarse pass).
@@ -223,12 +242,13 @@ WASM class `Engine` (camelCase in JS):
 | `new Engine()` | |
 | `loadEphemeris(metaJson: string, bytes: Uint8Array)` | |
 | `loadTerrainManifest(json: string)` | |
+| `loadDsn(metaJson: string, bytes: Uint8Array)` | `dsn.json` text + `dsn.i16` (n x 3 int16, Moon elevation x0.01 deg from DSS-14, DSS-43, DSS-63 on the ephemeris grid) |
 | `addTile(levelId: string, tx: number, ty: number, raw: Uint8Array)` | raw = gunzipped 131072 bytes |
 | `hasTile(levelId, tx, ty): boolean` | |
 | `requiredTiles(lat, lon, maxDistKm: number \| undefined, nAz: number): string[]` | keys `"s0/ty/tx"` the horizon march will touch (incl. bilinear neighbours) |
 | `requiredTilesArea(lat, lon, radiusKm, levelId?: string): string[]` | tiles covering a disc (for ellipse, patches, terrain sampling) |
 | `horizon(lat, lon, heightM, nAz): HorizonResult` | `{ nAz, elevDeg: Float32Array, resolutionM, maxDistKm, siteElevM, missingSamples }` |
-| `visibility(lat, lon, heightM, elevDeg: Float32Array, tStart, tEnd, stepS): VisResult` | see below |
+| `visibility(lat, lon, heightM, elevDeg: Float32Array, tStart, tEnd, stepS, opts?: { relay?: boolean }): VisResult` | see below |
 | `loadIndexManifest(json)`, `loadIndexStatic(raw: Uint8Array)`, `addIndexMonth(month, raw)`, `addHorizonBand(band: number, raw)` | |
 | `indexMonthsNeeded(tStart, tEnd): string[]` | |
 | `rankCoarse(query): { candidates: Candidate[], bandsNeeded: number[], stats }` | |
@@ -248,6 +268,8 @@ WASM class `Engine` (camelCase in JS):
 ```
 { t: Float64Array, sunAz, sunEl, sunFrac, earthAz, earthEl: Float32Array,
   earthUp: Uint8Array, eclipseFrac: Float32Array,
+  linkMargin: Uint8Array /* 0 no Earth LOS, 1 marginal (Earth centre < 1.5 deg above skyline), 2 clear */,
+  dsnUp?: Uint8Array /* bit0 Goldstone, bit1 Canberra, bit2 Madrid (Moon el >= 10 deg); present if DSN loaded or relay (relay: all 7) */,
   metrics: { <window metric name>: number },
   events: [ { t: number, kind: "sunrise"|"sunset"|"earthrise"|"earthset"|"eclipse_start"|"eclipse_end" } ] }
 ```

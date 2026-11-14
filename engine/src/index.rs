@@ -7,12 +7,33 @@ use std::collections::HashMap;
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct GridJson {
+    /// "south_stereo" (default) or "equirect" (global grid)
+    #[serde(default)]
+    pub proj: Option<String>,
+    #[serde(default)]
     pub cell_m: f64,
+    #[serde(default)]
     pub x0: f64,
+    #[serde(default)]
     pub y0: f64,
     pub nx: usize,
     pub ny: usize,
+    /// Cells with latitude above this are invalid (polar index); default 90.
+    #[serde(default = "default_max_lat")]
     pub max_lat: f64,
+    /// equirect: cells per degree, lat of the top edge, lon of the left edge.
+    #[serde(default)]
+    pub ppd: f64,
+    #[serde(default = "default_max_lat")]
+    pub lat_max: f64,
+    #[serde(default = "default_lon_min")]
+    pub lon_min: f64,
+}
+fn default_max_lat() -> f64 {
+    90.0
+}
+fn default_lon_min() -> f64 {
+    -180.0
 }
 #[derive(Deserialize, Clone, Debug)]
 struct StaticJson {
@@ -66,13 +87,24 @@ pub struct Index {
 impl Index {
     pub fn from_json(json: &str) -> Res<Self> {
         let m: IndexJson = serde_json::from_str(json)?;
-        let g = m.grid;
+        let mut g = m.grid;
+        let equirect = g.proj.as_deref() == Some("equirect");
+        if equirect {
+            if !(g.ppd > 0.0) {
+                bail!("equirect grid needs ppd");
+            }
+            g.cell_m = R * std::f64::consts::PI / 180.0 / g.ppd;
+        }
         let n = g.nx * g.ny;
         let (mut lat, mut lon, mut valid) = (vec![f64::NAN; n], vec![f64::NAN; n], vec![false; n]);
         for i in 0..g.ny {
             for j in 0..g.nx {
-                let (x, y) = Self::cell_xy_of(&g, i, j);
-                let (la, lo) = south_stereo_inv(x, y);
+                let (la, lo) = if equirect {
+                    (g.lat_max - (i as f64 + 0.5) / g.ppd, wrap180(g.lon_min + (j as f64 + 0.5) / g.ppd))
+                } else {
+                    let (x, y) = Self::cell_xy_of(&g, i, j);
+                    south_stereo_inv(x, y)
+                };
                 let c = i * g.nx + j;
                 lat[c] = la;
                 lon[c] = lo;

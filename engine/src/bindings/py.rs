@@ -2,6 +2,7 @@
 use crate::engine::Engine as Core;
 use crate::error::EngineError;
 use crate::geo::*;
+use crate::global::{global_grid_bitsets, global_grid_horizons, GlobalGrid};
 use crate::grid::{grid_bitsets, grid_horizons, BitsetSpec, GridSpec};
 use crate::metrics::Metrics;
 use numpy::{IntoPyArray, PyArray1, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray3, PyUntypedArrayMethods};
@@ -45,6 +46,12 @@ impl Engine {
         py.detach(|| crate::native_io::load_terrain_dir(core, Path::new(data_dir), levels.as_deref())).map_err(err)
     }
 
+    fn load_dsn_files(&mut self, json_path: &str, i16_path: &str) -> PyResult<()> {
+        let meta = std::fs::read_to_string(json_path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let bytes = std::fs::read(i16_path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        self.core.load_dsn(&meta, &bytes).map_err(err)
+    }
+
     fn load_terrain_manifest(&mut self, json: &str) -> PyResult<()> {
         self.core.load_terrain_manifest(json).map_err(err)
     }
@@ -80,7 +87,7 @@ impl Engine {
         self.core.required_tiles(lat, lon, max_dist_km, n_az).map_err(err)
     }
 
-    #[pyo3(signature = (lat, lon, h, elev_deg, t_start, t_end, step_s, site_elev_m=None))]
+    #[pyo3(signature = (lat, lon, h, elev_deg, t_start, t_end, step_s, site_elev_m=None, relay=false))]
     #[allow(clippy::too_many_arguments)]
     fn visibility<'py>(
         &self,
@@ -93,10 +100,11 @@ impl Engine {
         t_end: f64,
         step_s: f64,
         site_elev_m: Option<f64>,
+        relay: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
         let hz = elev_deg.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?;
         let z = site_elev_m.unwrap_or_else(|| self.core.site_elev_or_zero(lat, lon));
-        let r = self.core.visibility_z(lat, lon, h, z, hz, t_start, t_end, step_s).map_err(err)?;
+        let r = self.core.visibility_full(lat, lon, h, z, hz, t_start, t_end, step_s, relay).map_err(err)?;
         let s = r.series;
         let d = PyDict::new(py);
         d.set_item("t", s.t.into_pyarray(py))?;
@@ -107,6 +115,10 @@ impl Engine {
         d.set_item("earth_el", s.earth_el.into_pyarray(py))?;
         d.set_item("earth_up", s.earth_up.into_pyarray(py))?;
         d.set_item("eclipse_frac", s.eclipse_frac.into_pyarray(py))?;
+        d.set_item("link_margin", r.comms.link_margin.into_pyarray(py))?;
+        if let Some(m) = r.comms.dsn_up {
+            d.set_item("dsn_up", m.into_pyarray(py))?;
+        }
         d.set_item("metrics", metrics_dict(py, &r.metrics)?)?;
         let ev = PyList::empty(py);
         for e in &r.events {
@@ -185,6 +197,74 @@ impl Engine {
         let g = GridSpec { nx, ny, x0, y0, cell_m };
         let spec = BitsetSpec { n_az, t0: t0_unix, n_steps, step_s, height_m };
         let (s, e) = py.detach(|| grid_bitsets(eph, terr, el, hz, &g, &spec)).map_err(err)?;
+        Ok((s.into_pyarray(py), e.into_pyarray(py)))
+    }
+
+    /// Heights (m) at points; `level` = level id ("g0", ...) or None for the finest valid level. NaN where invalid.
+    #[pyo3(signature = (lats, lons, level=None))]
+    fn sample_points<'py>(&self, py: Python<'py>, lats: PyReadonlyArray1<'py, f64>, lons: PyReadonlyArray1<'py, f64>, level: Option<String>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let t = self.core.terrain.as_ref().ok_or_else(|| PyValueError::new_err("terrain not loaded"))?;
+        let li = match &level {
+            Some(id) => Some(t.level_index(id).ok_or_else(|| PyValueError::new_err(format!("unknown level {id}")))?),
+            None => None,
+        };
+        let (la, lo) = (lats.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?, lons.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?);
+        if la.len() != lo.len() {
+            return Err(PyValueError::new_err("lats and lons differ in length"));
+        }
+        let out: Vec<f64> = py.detach(|| {
+            la.iter()
+                .zip(lo)
+                .map(|(&a, &b)| {
+                    let u = unit_from_latlon(nudge_lat(a), b);
+                    match li {
+                        Some(li) => t.sample(li, &u),
+                        None => t.site_elevation(&u).map(|v| v.0),
+                    }
+                    .unwrap_or(f64::NAN)
+                })
+                .collect()
+        });
+        Ok(out.into_pyarray(py))
+    }
+
+    /// Global equirect grid (lon from -180, lat from 90, `ppd` cells/deg) horizons: int16 [ny, nx, n_az], 0.01 deg.
+    #[pyo3(signature = (ppd, n_az, height_m, max_dist_km=150.0))]
+    fn global_grid_horizons<'py>(&self, py: Python<'py>, ppd: f64, n_az: usize, height_m: f64, max_dist_km: f64) -> PyResult<Bound<'py, numpy::PyArray3<i16>>> {
+        let t = self.core.terrain.as_ref().ok_or_else(|| PyValueError::new_err("terrain not loaded"))?;
+        let g = GlobalGrid::whole_moon(ppd);
+        let out = py.detach(|| global_grid_horizons(t, &g, n_az, height_m, max_dist_km * 1000.0));
+        out.into_pyarray(py).reshape([g.ny, g.nx, n_az])
+    }
+
+    /// Global bitsets (same bit layout as `grid_bitsets`); horizons from `global_grid_horizons`.
+    #[pyo3(signature = (horizons, t0_unix, n_steps, step_s, height_m, ppd, elev_m=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn global_grid_bitsets<'py>(
+        &self,
+        py: Python<'py>,
+        horizons: PyReadonlyArray3<'py, i16>,
+        t0_unix: f64,
+        n_steps: usize,
+        step_s: f64,
+        height_m: f64,
+        ppd: f64,
+        elev_m: Option<PyReadonlyArray1<'py, f32>>,
+    ) -> PyResult<(Bound<'py, PyArray1<u64>>, Bound<'py, PyArray1<u64>>)> {
+        let n_az = horizons.shape()[2];
+        let g = GlobalGrid::whole_moon(ppd);
+        if horizons.shape()[0] != g.ny || horizons.shape()[1] != g.nx {
+            return Err(PyValueError::new_err("horizons shape does not match the global grid for this ppd"));
+        }
+        let hz = horizons.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let el = match &elev_m {
+            Some(a) => Some(a.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?),
+            None => None,
+        };
+        let eph = self.core.ephem.as_ref().ok_or_else(|| PyValueError::new_err("ephemeris not loaded"))?;
+        let spec = BitsetSpec { n_az, t0: t0_unix, n_steps, step_s, height_m };
+        let terr = self.core.terrain.as_ref();
+        let (s, e) = py.detach(|| global_grid_bitsets(eph, terr, el, hz, &g, &spec)).map_err(err)?;
         Ok((s.into_pyarray(py), e.into_pyarray(py)))
     }
 }

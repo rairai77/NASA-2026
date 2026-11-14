@@ -48,6 +48,12 @@ impl Engine {
         Ok(Float64Array::from(&[e.t0, e.t_end()][..]))
     }
 
+    /// DSN Moon-elevation table (dsn.json text + dsn.i16 bytes).
+    #[wasm_bindgen(js_name = loadDsn)]
+    pub fn load_dsn(&mut self, meta_json: &str, bytes: &[u8]) -> Result<(), JsError> {
+        self.core.load_dsn(meta_json, bytes).map_err(err)
+    }
+
     #[wasm_bindgen(js_name = loadTerrainManifest)]
     pub fn load_terrain_manifest(&mut self, json: &str) -> Result<(), JsError> {
         self.core.load_terrain_manifest(json).map_err(err)
@@ -91,8 +97,10 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn visibility(&self, lat: f64, lon: f64, height_m: f64, elev_deg: &[f32], t_start: f64, t_end: f64, step_s: f64) -> Result<JsValue, JsError> {
-        let r = self.core.visibility(lat, lon, height_m, elev_deg, t_start, t_end, step_s).map_err(err)?;
+    pub fn visibility(&self, lat: f64, lon: f64, height_m: f64, elev_deg: &[f32], t_start: f64, t_end: f64, step_s: f64, opts: JsValue) -> Result<JsValue, JsError> {
+        let relay = get(&opts, "relay").as_bool().unwrap_or(false);
+        let z = self.core.site_elev_or_zero(lat, lon);
+        let r = self.core.visibility_full(lat, lon, height_m, z, elev_deg, t_start, t_end, step_s, relay).map_err(err)?;
         let s = &r.series;
         let o = Object::new();
         set(&o, "t", &Float64Array::from(&s.t[..]));
@@ -103,6 +111,10 @@ impl Engine {
         set(&o, "earthEl", &Float32Array::from(&s.earth_el[..]));
         set(&o, "earthUp", &Uint8Array::from(&s.earth_up[..]));
         set(&o, "eclipseFrac", &Float32Array::from(&s.eclipse_frac[..]));
+        set(&o, "linkMargin", &Uint8Array::from(&r.comms.link_margin[..]));
+        if let Some(d) = &r.comms.dsn_up {
+            set(&o, "dsnUp", &Uint8Array::from(&d[..]));
+        }
         set(&o, "metrics", &to_js(&r.metrics)?);
         set(&o, "events", &to_js(&r.events)?);
         Ok(o.into())
@@ -131,6 +143,31 @@ impl Engine {
     #[wasm_bindgen(js_name = indexMonthsNeeded)]
     pub fn index_months_needed(&self, t_start: f64, t_end: f64) -> Result<Vec<String>, JsError> {
         self.core.index_months_needed(t_start, t_end).map_err(err)
+    }
+
+    #[wasm_bindgen(js_name = loadGlobalManifest)]
+    pub fn load_global_manifest(&mut self, json: &str) -> Result<(), JsError> {
+        self.core.load_global_manifest(json).map_err(err)
+    }
+
+    #[wasm_bindgen(js_name = loadGlobalStatic)]
+    pub fn load_global_static(&mut self, raw: &[u8]) -> Result<(), JsError> {
+        self.core.load_global_static(raw).map_err(err)
+    }
+
+    #[wasm_bindgen(js_name = addGlobalMonth)]
+    pub fn add_global_month(&mut self, month: &str, raw: &[u8]) -> Result<(), JsError> {
+        self.core.add_global_month(month, raw).map_err(err)
+    }
+
+    #[wasm_bindgen(js_name = addGlobalHorizonBand)]
+    pub fn add_global_horizon_band(&mut self, band: u32, raw: &[u8]) -> Result<(), JsError> {
+        self.core.add_global_horizon_band(band as usize, raw).map_err(err)
+    }
+
+    #[wasm_bindgen(js_name = globalMonthsNeeded)]
+    pub fn global_months_needed(&self, t_start: f64, t_end: f64) -> Result<Vec<String>, JsError> {
+        self.core.global_months_needed(t_start, t_end).map_err(err)
     }
 
     #[wasm_bindgen(js_name = rankCoarse)]

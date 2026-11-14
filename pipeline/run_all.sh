@@ -27,7 +27,7 @@ step() {
   echo "[done ] $name in $((SECONDS - t))s"
 }
 
-needs_index() { [[ "$FORCE" == "1" || ! -e "$D/index/manifest.json" || ! -e "$D/curated.json" || ! -e "$D/missions_pred.json" ]]; }
+needs_index() { [[ "$FORCE" == "1" || ! -e "$D/index/manifest.json" || ! -e "$D/curated.json" || ! -e "$D/missions_pred.json" || ! -e "$D/global/manifest.json" ]]; }
 
 build_engine() {
   rm -rf "$PIPE/work/wheels"
@@ -45,7 +45,7 @@ step "imagery" "$D/imagery/color/meta.json" -- "$PY" imagery.py
 step "dsn" "$D/dsn/dsn.json" "$D/dsn/dsn.i16" -- "$PY" dsn.py
 
 if needs_index; then
-  if [[ "$FORCE" == "1" ]] || ! "$PY" -c "import lunar_engine" 2>/dev/null; then
+  if [[ "$FORCE" == "1" ]] || ! "$PY" -c "import lunar_engine; lunar_engine.Engine.global_grid_horizons" 2>/dev/null; then
     t=$SECONDS; echo "[run  ] engine wheel"; build_engine; echo "[done ] engine wheel in $((SECONDS - t))s"
   else
     echo "[skip ] engine wheel (lunar_engine importable)"
@@ -55,6 +55,7 @@ else
 fi
 
 step "index" "$D/index/manifest.json" -- "$PY" index.py
+step "global_index" "$D/global/manifest.json" -- "$PY" global_index.py
 step "curated" "$D/curated.json" -- "$PY" curated.py
 step "missions_pred" "$D/missions_pred.json" -- "$PY" missions_pred.py
 step "layers" "$D/layers/manifest.json" -- bash -c "\"$PY\" validate_pgda.py --fetch && \"$PY\" layers.py"

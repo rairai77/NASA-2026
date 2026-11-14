@@ -99,3 +99,14 @@ horizon, 150 random pixels, reference = full 720-az horizon + visibility per pix
 512 px (58.6 m) the agreement falls to 77 % (mean |diff| 0.23): terrain is under-sampled and narrow shadows alias, so use
 pixels of about 20-30 m for local patches. Timing in WASM (Node, single thread, 1024 px, 30 km): first call incl. height
 grid 200 ms, later times ~95 ms; 512 px ~32 ms.
+
+**Comms / DSN sanity** (`engine/parity/comms_check.mjs`, one year from 2026-03-01, 900 s steps): `comms_hours <= earth_hours`
+at all 3 test sites (Apollo 11: 8564.8 of 8760 Earth hours, Malapert massif 2826.5 of 2842.8, Shackleton ridge 1138.8 of
+1147.0). At least one of the 3 DSN complexes has the Moon >= 10 deg for 97.8 % of steps (the gaps are the only difference
+between comms and Earth hours). `relay: true` gives comms hours = window hours. Marginal-link hours (Earth centre within
+1.5 deg above the skyline): Apollo 11 0, Malapert massif 668 h, Shackleton ridge 1147 h (all its Earth time is marginal).
+
+**Global index** (`pipeline/global_index.py`, `engine/parity/global_check.mjs`): 1080 x 540 cells (3/deg, ~10 km), 72 az,
+150 km, 6 h steps, 68 files, largest 13.3 MiB. Build: horizons 217 s + bitsets for 60 months 183 s on 4 contended cores.
+A 4-month bbox query (-60..60 E, -30..30 N, slope <= 5 deg): rankCoarse 0.59 s over 64,800 cells and rankRefine of 50
+candidates 0.14 s in WASM (Node); whole-Moon unfiltered coarse pass over 583,200 cells works. Results are flagged `coarse`.

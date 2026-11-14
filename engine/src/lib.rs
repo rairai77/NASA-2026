@@ -4,10 +4,12 @@
 //! series, window metrics, index ranking, landing-ellipse sampling. Hosts push
 //! data in (Python via PyO3, browser via wasm-bindgen).
 pub mod bindings;
+pub mod comms;
 pub mod engine;
 pub mod ephem;
 pub mod error;
 pub mod geo;
+pub mod global;
 pub mod grid;
 pub mod heights;
 pub mod horizon;

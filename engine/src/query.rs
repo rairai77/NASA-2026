@@ -25,6 +25,7 @@ pub enum Region {
     Polar { min_lat: f64, max_lat: f64 },
     Circle { lat: f64, lon: f64, radius_km: f64 },
     Sites { ids: Vec<String> },
+    Bbox { west: f64, south: f64, east: f64, north: f64 },
     Global,
 }
 
@@ -56,6 +57,9 @@ pub struct Query {
     pub min_separation_km: Option<f64>,
     /// Optional power model; enables `energy_wh` and `battery_wh_needed`.
     pub power: Option<crate::power::Panel>,
+    /// Assume a relay: comms always available (comms metrics = window hours).
+    #[serde(default)]
+    pub relay: bool,
 }
 
 pub struct ParsedQuery {
@@ -70,6 +74,7 @@ pub struct ParsedQuery {
     pub k: usize,
     pub min_sep_m: f64,
     pub power: Option<crate::power::Panel>,
+    pub relay: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -96,7 +101,7 @@ pub const COARSE_METRICS: &[&str] = &[
     "sun_hours", "sun_frac", "earth_hours", "both_hours", "longest_sun_h", "longest_dark_h", "longest_earth_h",
     "longest_no_earth_h", "longest_both_h",
 ];
-pub const FINE_ONLY_METRICS: &[&str] = &["mean_sun_el_deg", "min_sun_el_deg", "sun_disc_frac_mean", "eclipse_hours", "energy_wh", "battery_wh_needed"];
+pub const FINE_ONLY_METRICS: &[&str] = &["mean_sun_el_deg", "min_sun_el_deg", "sun_disc_frac_mean", "eclipse_hours", "energy_wh", "battery_wh_needed", "comms_hours", "longest_comms_h", "marginal_hours"];
 
 pub fn is_known_metric(m: &str) -> bool {
     STATIC_METRICS.contains(&m) || COARSE_METRICS.contains(&m) || FINE_ONLY_METRICS.contains(&m)
@@ -236,6 +241,7 @@ impl Query {
             k: self.k.unwrap_or(5).max(1),
             min_sep_m: self.min_separation_km.unwrap_or(2.0).max(0.0) * 1000.0,
             power: self.power.clone(),
+            relay: self.relay,
         })
     }
 }

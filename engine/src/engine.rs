@@ -20,6 +20,9 @@ pub struct Engine {
     pub ephem: Option<Ephemeris>,
     pub terrain: Option<Terrain>,
     pub index: Option<Index>,
+    pub dsn: Option<crate::comms::Dsn>,
+    /// Coarse global index (~10 km equirect cells), same layout as the polar index.
+    pub global: Option<Index>,
     patch_cache: Mutex<Option<Arc<crate::patch::PatchGrid>>>,
 }
 
@@ -31,6 +34,7 @@ pub struct HorizonResult {
 
 pub struct VisResult {
     pub series: crate::visibility::Series,
+    pub comms: crate::comms::Comms,
     pub metrics: Metrics,
     pub events: Vec<Event>,
 }
@@ -112,6 +116,10 @@ impl Engine {
         self.ephem = Some(Ephemeris::from_bytes(meta_json, bytes)?);
         Ok(())
     }
+    pub fn load_dsn(&mut self, meta_json: &str, bytes: &[u8]) -> Res<()> {
+        self.dsn = Some(crate::comms::Dsn::from_bytes(meta_json, bytes)?);
+        Ok(())
+    }
     pub fn load_terrain_manifest(&mut self, json: &str) -> Res<()> {
         self.terrain = Some(Terrain::from_manifest_json(json)?);
         Ok(())
@@ -143,6 +151,50 @@ impl Engine {
     }
     pub fn index_months_needed(&self, t0: f64, t1: f64) -> Res<Vec<String>> {
         self.idx()?.months_needed(t0, t1)
+    }
+
+    pub fn load_global_static(&mut self, raw: &[u8]) -> Res<()> {
+        self.global_mut()?.load_static(raw)
+    }
+    pub fn add_global_month(&mut self, month: &str, raw: &[u8]) -> Res<()> {
+        self.global_mut()?.add_month(month, raw)
+    }
+    pub fn add_global_horizon_band(&mut self, band: usize, raw: &[u8]) -> Res<()> {
+        self.global_mut()?.add_band(band, raw)
+    }
+
+    // ---- global (coarse) index
+    pub fn load_global_manifest(&mut self, json: &str) -> Res<()> {
+        let ix = Index::from_json(json)?;
+        if ix.grid.proj.as_deref() != Some("equirect") {
+            bail!("global manifest must have grid.proj = \"equirect\"");
+        }
+        self.global = Some(ix);
+        Ok(())
+    }
+    pub fn global_mut(&mut self) -> Res<&mut Index> {
+        self.global.as_mut().ok_or_else(|| "global manifest not loaded".into())
+    }
+    pub fn global_months_needed(&self, t0: f64, t1: f64) -> Res<Vec<String>> {
+        self.global.as_ref().ok_or("global manifest not loaded")?.months_needed(t0, t1)
+    }
+
+    /// Which index serves a query region; the bool is true for the global (coarse) grid.
+    fn pick_index(&self, region: &crate::query::Region) -> Res<(&Index, bool)> {
+        use crate::query::Region::*;
+        let in_cap = |ix: &Index| match region {
+            Polar { max_lat, .. } => *max_lat <= ix.grid.max_lat + 1e-9,
+            Circle { lat, radius_km, .. } => lat + radius_km / 111.195 <= ix.grid.max_lat && *lat <= ix.grid.max_lat,
+            Sites { .. } => true,
+            Bbox { north, .. } => *north <= ix.grid.max_lat + 1e-9,
+            Global => false,
+        };
+        match (&self.index, &self.global) {
+            (Some(p), _) if in_cap(p) => Ok((p, false)),
+            (_, Some(g)) => Ok((g, true)),
+            (Some(_), None) => bail!("region extends beyond the polar index; the global index is not loaded"),
+            _ => bail!("no index loaded"),
+        }
     }
 
     // ------------------------------------------------------------ tiles
@@ -204,14 +256,23 @@ impl Engine {
     }
 
     pub fn visibility_z(&self, lat: f64, lon: f64, h: f64, z_m: f64, elev_deg: &[f32], t0: f64, t1: f64, step_s: f64) -> Res<VisResult> {
+        self.visibility_full(lat, lon, h, z_m, elev_deg, t0, t1, step_s, false)
+    }
+
+    /// Visibility plus comms (DSN mask, link margin, comms metrics). `relay` assumes
+    /// continuous relay coverage.
+    #[allow(clippy::too_many_arguments)]
+    pub fn visibility_full(&self, lat: f64, lon: f64, h: f64, z_m: f64, elev_deg: &[f32], t0: f64, t1: f64, step_s: f64, relay: bool) -> Res<VisResult> {
         if elev_deg.len() < 4 {
             bail!("horizon needs at least 4 azimuth bins");
         }
         let site = Site::new(lat, lon, R + z_m + h);
         let s = series(self.eph()?, &site, elev_deg, t0, t1, step_s)?;
-        let metrics = window_metrics(&s);
+        let mut metrics = window_metrics(&s);
+        let comms = crate::comms::compute(&s, self.dsn.as_ref(), relay)?;
+        metrics.extend(comms.metrics.clone());
         let events = events(&s);
-        Ok(VisResult { series: s, metrics, events })
+        Ok(VisResult { series: s, comms, metrics, events })
     }
 
     pub fn sun_earth_at(&self, lat: f64, lon: f64, t: f64) -> Res<SunEarth> {
@@ -233,21 +294,30 @@ impl Engine {
 
     // ------------------------------------------------------------ ranking
     pub fn rank_coarse(&self, q: &Query) -> Res<CoarseResult> {
-        let ix = self.idx()?;
+        let region = q.region.clone().unwrap_or(crate::query::Region::Polar { min_lat: -90.0, max_lat: -85.0 });
+        let (ix, global) = self.pick_index(&region)?;
         let pq = q.parse(ix.height_m)?;
-        rank_coarse(ix, &pq)
+        let mut r = rank_coarse(ix, &pq)?;
+        r.stats.global = global;
+        Ok(r)
     }
 
     pub fn rank_refine(&self, q: &Query, cands: &[Candidate]) -> Res<RankResult> {
-        let ix = self.idx()?;
+        let region = q.region.clone().unwrap_or(crate::query::Region::Polar { min_lat: -90.0, max_lat: -85.0 });
+        let (ix, global) = self.pick_index(&region)?;
         let pq = q.parse(ix.height_m)?;
-        rank_refine(ix, self.eph()?, &pq, cands)
+        let mut r = rank_refine(ix, self.eph()?, self.dsn.as_ref(), &pq, cands)?;
+        if global {
+            r.coarse = true;
+            r.results.iter_mut().for_each(|i| i.coarse = true);
+        }
+        Ok(r)
     }
 
     pub fn rank_points(&self, q: &Query, pts: &[PointIn]) -> Res<RankResult> {
         let pq = q.parse(2.0)?;
         let res = self.terrain.as_ref().map_or(20.0, |t| t.finest_pixel());
-        rank_points(self.eph()?, &pq, pts, res)
+        rank_points(self.eph()?, self.dsn.as_ref(), &pq, pts, res)
     }
 
     // ------------------------------------------------------------ ellipse

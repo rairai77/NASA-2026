@@ -27,6 +27,8 @@ pub struct CoarseStats {
     pub considered: usize,
     pub passed_filters: usize,
     pub window_steps: usize,
+    /// Candidates come from the coarse global grid.
+    pub global: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -48,6 +50,12 @@ pub struct RankItem {
     pub lon: f64,
     pub metrics: Metrics,
     pub coarse_metrics: Metrics,
+    #[serde(skip_serializing_if = "is_false")]
+    pub coarse: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Serialize, Debug)]
@@ -58,6 +66,8 @@ pub struct RankResult {
     pub passed_filters: usize,
     pub resolution_m: f64,
     pub model: &'static str,
+    /// True when the result comes from the coarse global grid (~10 km cells).
+    pub coarse: bool,
 }
 
 pub struct PointIn {
@@ -69,13 +79,14 @@ pub struct PointIn {
 }
 
 /// Metrics for a site with a known horizon over a window (fine series).
-pub fn point_metrics(eph: &Ephemeris, lat: f64, lon: f64, z_m: f64, h: f64, hz: &[f32], t0: f64, t1: f64, step_s: f64, power: Option<&crate::power::Panel>) -> Res<Metrics> {
+pub fn point_metrics(eph: &Ephemeris, lat: f64, lon: f64, z_m: f64, h: f64, hz: &[f32], t0: f64, t1: f64, step_s: f64, power: Option<&crate::power::Panel>, dsn: Option<&crate::comms::Dsn>, relay: bool) -> Res<Metrics> {
     let site = Site::new(lat, lon, R + z_m + h);
     let s = series(eph, &site, hz, t0, t1, step_s)?;
     let mut m = window_metrics(&s);
     if let Some(p) = power {
         crate::power::add_metrics(&mut m, &s, p)?;
     }
+    m.extend(crate::comms::compute(&s, dsn, relay)?.metrics);
     Ok(m)
 }
 
@@ -119,7 +130,11 @@ pub fn rank_coarse(ix: &Index, q: &ParsedQuery) -> Res<CoarseResult> {
             Region::Polar { min_lat, max_lat } => ix.lat[c] >= *min_lat && ix.lat[c] <= *max_lat,
             Region::Circle { radius_km, .. } => gc_dist_m(&ix.cell_unit(c), center.as_ref().unwrap()) <= radius_km * 1000.0,
             Region::Sites { .. } => bail!("region.type 'sites' is ranked with rankPoints, not rankCoarse"),
-            Region::Global => bail!("region.type 'global' is not supported by the polar index"),
+            Region::Global => true,
+            Region::Bbox { west, south, east, north } => {
+                let width = (east - west).rem_euclid(360.0);
+                ix.lat[c] >= *south && ix.lat[c] <= *north && (ix.lon[c] - west).rem_euclid(360.0) <= width
+            }
         };
         // statics may mark cells invalid with NaN
         if ok && ix.static_value("elev_m", c).is_some() {
@@ -194,7 +209,7 @@ pub fn rank_coarse(ix: &Index, q: &ParsedQuery) -> Res<CoarseResult> {
         candidates.push(Candidate { cell: *c, lat: ix.lat[*c], lon: wrap180(ix.lon[*c]), metrics: m.clone() });
     }
     bands.sort_unstable();
-    Ok(CoarseResult { candidates, bands_needed: bands, stats: CoarseStats { considered, passed_filters: passed, window_steps: n_steps } })
+    Ok(CoarseResult { candidates, bands_needed: bands, stats: CoarseStats { considered, passed_filters: passed, window_steps: n_steps, global: false } })
 }
 
 /// Common tail of refine/points: filter, sort, NMS, truncate to k.
@@ -216,15 +231,15 @@ fn finish(
         .enumerate()
         .map(|(r, i)| {
             let (cell, id, lat, lon, metrics, coarse) = items[i].take().unwrap();
-            RankItem { rank: r + 1, cell, id, lat: wrap180(lat), lon: wrap180(lon), metrics, coarse_metrics: coarse }
+            RankItem { rank: r + 1, cell, id, lat: wrap180(lat), lon: wrap180(lon), metrics, coarse_metrics: coarse, coarse: false }
         })
         .collect();
-    RankResult { results, considered, passed_filters: passed, resolution_m, model: "terrain" }
+    RankResult { results, considered, passed_filters: passed, resolution_m, model: "terrain", coarse: false }
 }
 
-pub fn rank_refine(ix: &Index, eph: &Ephemeris, q: &ParsedQuery, cands: &[Candidate]) -> Res<RankResult> {
+pub fn rank_refine(ix: &Index, eph: &Ephemeris, dsn: Option<&crate::comms::Dsn>, q: &ParsedQuery, cands: &[Candidate]) -> Res<RankResult> {
     if cands.is_empty() {
-        return Ok(RankResult { results: vec![], considered: 0, passed_filters: 0, resolution_m: ix.grid.cell_m, model: "terrain" });
+        return Ok(RankResult { results: vec![], considered: 0, passed_filters: 0, resolution_m: ix.grid.cell_m, model: "terrain", coarse: false });
     }
     let rows: Vec<Res<(Metrics, Metrics)>> = pmap(cands, |c| {
         if c.cell >= ix.ncells() {
@@ -232,7 +247,7 @@ pub fn rank_refine(ix: &Index, eph: &Ephemeris, q: &ParsedQuery, cands: &[Candid
         }
         let hz = ix.cell_horizon(c.cell)?;
         let z = ix.static_value("elev_m", c.cell).unwrap_or(0.0);
-        let mut m = point_metrics(eph, ix.lat[c.cell], ix.lon[c.cell], z, q.height_m, &hz, q.t_start, q.t_end, REFINE_STEP_S, q.power.as_ref())?;
+        let mut m = point_metrics(eph, ix.lat[c.cell], ix.lon[c.cell], z, q.height_m, &hz, q.t_start, q.t_end, REFINE_STEP_S, q.power.as_ref(), dsn, q.relay)?;
         m.extend(static_metrics(ix, c.cell));
         Ok((m, c.metrics.clone()))
     });
@@ -245,12 +260,12 @@ pub fn rank_refine(ix: &Index, eph: &Ephemeris, q: &ParsedQuery, cands: &[Candid
     Ok(finish(q, items, &|i| ix.cell_unit(cells[i]), ix.grid.cell_m))
 }
 
-pub fn rank_points(eph: &Ephemeris, q: &ParsedQuery, pts: &[PointIn], resolution_m: f64) -> Res<RankResult> {
+pub fn rank_points(eph: &Ephemeris, dsn: Option<&crate::comms::Dsn>, q: &ParsedQuery, pts: &[PointIn], resolution_m: f64) -> Res<RankResult> {
     let rows: Vec<Res<Metrics>> = pmap(pts, |p| {
         if p.elev_deg.len() < 4 {
             bail!("point '{}': horizon needs at least 4 azimuth bins", p.id);
         }
-        let mut m = point_metrics(eph, p.lat, p.lon, p.site_elev_m, q.height_m, &p.elev_deg, q.t_start, q.t_end, REFINE_STEP_S, q.power.as_ref())?;
+        let mut m = point_metrics(eph, p.lat, p.lon, p.site_elev_m, q.height_m, &p.elev_deg, q.t_start, q.t_end, REFINE_STEP_S, q.power.as_ref(), dsn, q.relay)?;
         m.insert("lat".into(), p.lat);
         m.insert("lon".into(), wrap180(p.lon));
         m.insert("elev_m".into(), p.site_elev_m);
