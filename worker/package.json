@@ -1,0 +1,17 @@
+{
+  "name": "lunar-site-navigator-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "gen-sites": "node ../scripts/gen-sites.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types src/validate.test.ts",
+    "dev": "wrangler dev --config ../wrangler.toml",
+    "dry-run": "wrangler deploy --config ../wrangler.toml --dry-run --outdir ../.wrangler/dry"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261113.1",
+    "typescript": "^5.6.0",
+    "wrangler": "^4.0.0"
+  }
+}

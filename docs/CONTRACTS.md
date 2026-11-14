@@ -230,6 +230,9 @@ WASM class `Engine` (camelCase in JS):
 | `rankRefine(query, candidates): RankResult` | |
 | `ellipse(lat, lon, semiMajorM, semiMinorM, rotDeg, n, heightM, tStart, tEnd, stepS): EllipseResult` | |
 | `sampleHeights(west, south, east, north, w, h): Float32Array` | heights (m) on a w×h lat/lon grid incl. edges, row 0 = north; for Cesium terrain |
+| `requiredTilesRect(west, south, east, north, w, h): string[]` | tiles `sampleHeights` will read for that grid |
+| `sunEarthAt(lat, lon, tUnix)` | `{ sunAz, sunEl, sunRadiusDeg, earthAz, earthEl, earthRadiusDeg, eclipseFrac, sunVecMe: [x,y,z], earthVecMe: [x,y,z] }` (unit vectors from the site, MOON_ME) |
+| `rankPoints(query, points: {id, lat, lon, elevDeg: Float32Array}[]): RankResult` | ranks arbitrary points with known horizons (curated sites, global search) |
 | `shadowPatch(lat, lon, sizeKm, px, tUnix): ShadowPatch` | lit/shade + hillshade raster for the overlay (extended) |
 
 `VisResult`:
@@ -311,4 +314,10 @@ data-src/      hand-curated JSON (sites, missions) committed to git
 web/           Vite + React + TS app; web/public/data/ is built output (git-ignored)
 worker/        Cloudflare Worker (static assets + /api/parse), wrangler.toml at repo root
 docs/          contracts and validation notes
+scripts/       build.sh (wasm-pack build of engine into web/src/engine/pkg, then web build), data packaging
 ```
+
+Build entrypoint: `scripts/build.sh` runs
+`wasm-pack build engine --release --target web --out-dir ../web/src/engine/pkg -- --features wasm`
+and then `npm ci && npm run build` in `web/` (output `web/dist/`, which includes
+`web/public/data/` when present). The Worker serves `web/dist/` as static assets.
