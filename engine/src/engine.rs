@@ -13,12 +13,14 @@ use crate::terrain::{TileSet, Terrain};
 use crate::visibility::{events, series, sky, Event, Site};
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 pub struct Engine {
     pub ephem: Option<Ephemeris>,
     pub terrain: Option<Terrain>,
     pub index: Option<Index>,
+    patch_cache: Mutex<Option<Arc<crate::patch::PatchGrid>>>,
 }
 
 pub struct HorizonResult {
@@ -67,6 +69,22 @@ pub struct EllipseResult {
     pub summary: BTreeMap<String, Summary>,
 }
 
+pub struct ShadowResult {
+    pub center_lat: f64,
+    pub center_lon: f64,
+    pub size_m: f64,
+    pub px: usize,
+    pub pixel_m: f64,
+    pub sun_az: f64,
+    pub sun_el: f64,
+    pub data: Vec<u8>,
+}
+
+pub struct PowerOut {
+    pub t: Vec<f64>,
+    pub r: crate::power::PowerResult,
+}
+
 /// Azimuth bins used for each landing-ellipse sample point (2 degrees).
 pub const ELLIPSE_N_AZ: usize = 180;
 pub const ELLIPSE_MAX_POINTS: usize = 1000;
@@ -78,6 +96,9 @@ impl Engine {
 
     fn eph(&self) -> Res<&Ephemeris> {
         self.ephem.as_ref().ok_or_else(|| "ephemeris not loaded".into())
+    }
+    pub fn terr_ref(&self) -> Res<&Terrain> {
+        self.terr()
     }
     fn terr(&self) -> Res<&Terrain> {
         self.terrain.as_ref().ok_or_else(|| "terrain manifest not loaded".into())
@@ -282,5 +303,61 @@ impl Engine {
             summary.insert(k, Summary { min: v[0], median, max: v[m - 1] });
         }
         Ok(EllipseResult { points, summary })
+    }
+
+    // ------------------------------------------------------------ shadow patch
+    pub fn required_tiles_patch(&self, lat: f64, lon: f64, size_km: f64, px: usize) -> Res<Vec<String>> {
+        let t = self.terr()?;
+        let mut set = TileSet::new(t);
+        crate::patch::plan_patch(t, lat, lon, size_km, px, &mut set);
+        Ok(set.keys(t))
+    }
+
+    /// Cached height grid for (lat, lon, sizeKm, px).
+    pub fn patch_grid(&self, lat: f64, lon: f64, size_km: f64, px: usize) -> Res<Arc<crate::patch::PatchGrid>> {
+        let mut c = self.patch_cache.lock().unwrap();
+        if let Some(g) = c.as_ref() {
+            if g.lat == lat && g.lon == lon && g.size_km == size_km && g.px == px {
+                return Ok(g.clone());
+            }
+        }
+        let g = Arc::new(crate::patch::PatchGrid::build(self.terr()?, lat, lon, size_km, px)?);
+        *c = Some(g.clone());
+        Ok(g)
+    }
+
+    pub fn sun_geom_at(&self, lat: f64, lon: f64, t: f64) -> Res<(crate::patch::SunGeom, V3)> {
+        let site = Site::new(lat, lon, R);
+        let (sun, earth) = self.eph()?.at(t).ok_or("time outside ephemeris coverage")?;
+        let sk = sky(&site, &sun, &earth, &[0.0; 4]);
+        Ok((crate::patch::SunGeom { az_deg: sk.sun_az, el_deg: sk.sun_el, r_deg: sk.sun_r_deg, eclipse: sk.eclipse_frac }, sk.sun_unit))
+    }
+
+    /// Sun and Earth geometry at a site (centre-frame az/el/radius, eclipse) and unit vectors.
+    pub fn body_geoms(&self, lat: f64, lon: f64, t: f64) -> Res<(crate::patch::SunGeom, V3, crate::patch::SunGeom, V3)> {
+        let site = Site::new(lat, lon, R);
+        let (sun, earth) = self.eph()?.at(t).ok_or("time outside ephemeris coverage")?;
+        let sk = sky(&site, &sun, &earth, &[0.0; 4]);
+        Ok((
+            crate::patch::SunGeom { az_deg: sk.sun_az, el_deg: sk.sun_el, r_deg: sk.sun_r_deg, eclipse: sk.eclipse_frac },
+            sk.sun_unit,
+            crate::patch::SunGeom { az_deg: sk.earth_az, el_deg: sk.earth_el, r_deg: sk.earth_r_deg, eclipse: 0.0 },
+            sk.earth_unit,
+        ))
+    }
+
+    pub fn shadow_patch(&self, lat: f64, lon: f64, size_km: f64, px: usize, t: f64) -> Res<ShadowResult> {
+        let g = self.patch_grid(lat, lon, size_km, px)?;
+        let (sg, su) = self.sun_geom_at(lat, lon, t)?;
+        let data = crate::patch::shadow(self.terr()?, &g, &su, &sg);
+        Ok(ShadowResult { center_lat: lat, center_lon: wrap180(lon), size_m: g.size_m, px, pixel_m: g.pixel_m, sun_az: sg.az_deg, sun_el: sg.el_deg, data })
+    }
+
+    // ------------------------------------------------------------ power
+    #[allow(clippy::too_many_arguments)]
+    pub fn power(&self, lat: f64, lon: f64, h: f64, elev_deg: &[f32], t0: f64, t1: f64, step_s: f64, panel: &crate::power::Panel) -> Res<PowerOut> {
+        let v = self.visibility(lat, lon, h, elev_deg, t0, t1, step_s)?;
+        let r = crate::power::power(&v.series, panel)?;
+        Ok(PowerOut { t: v.series.t, r })
     }
 }

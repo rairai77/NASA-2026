@@ -36,6 +36,8 @@ pub struct Sky {
     pub eclipse_frac: f64,
     /// Sun visible fraction (horizon and eclipse included).
     pub sun_frac: f64,
+    /// Horizon-limited visible fraction (no eclipse factor); used for rise/set events.
+    pub sun_frac_hz: f64,
     pub sun_hz: f64,
     pub earth_hz: f64,
     pub sun_unit: V3,
@@ -106,7 +108,8 @@ pub fn sky(site: &Site, sun_km: &V3, earth_km: &V3, hz: &[f32]) -> Sky {
     let ecl = eclipse_fraction(rs, re, sep);
     let shz = interp_horizon(hz, saz);
     let ehz = interp_horizon(hz, eaz);
-    let frac = sun_fraction((sel - shz).to_radians(), rs) * (1.0 - ecl);
+    let frac_hz = sun_fraction((sel - shz).to_radians(), rs);
+    let frac = frac_hz * (1.0 - ecl);
     Sky {
         sun_az: saz,
         sun_el: sel,
@@ -116,6 +119,7 @@ pub fn sky(site: &Site, sun_km: &V3, earth_km: &V3, hz: &[f32]) -> Sky {
         earth_r_deg: re.to_degrees(),
         eclipse_frac: ecl,
         sun_frac: frac,
+        sun_frac_hz: frac_hz,
         sun_hz: shz,
         earth_hz: ehz,
         sun_unit: su,
@@ -141,6 +145,8 @@ pub struct Series {
     pub earth_up: Vec<u8>,
     pub eclipse_frac: Vec<f32>,
     pub sun_up: Vec<u8>,
+    /// Horizon-only Sun fraction (for events).
+    pub sun_frac_hz: Vec<f32>,
     pub eclipse_active: Vec<u8>,
     /// Earth centre elevation minus horizon at Earth azimuth (deg), for event interpolation.
     pub earth_rel: Vec<f32>,
@@ -161,7 +167,7 @@ pub fn series(eph: &Ephemeris, site: &Site, hz: &[f32], t_start: f64, t_end: f64
     macro_rules! reserve {
         ($($f:ident),*) => { $( s.$f.reserve(n); )* };
     }
-    reserve!(t, sun_az, sun_el, sun_frac, earth_az, earth_el, earth_up, eclipse_frac, sun_up, eclipse_active, earth_rel);
+    reserve!(t, sun_az, sun_el, sun_frac, earth_az, earth_el, earth_up, eclipse_frac, sun_up, sun_frac_hz, eclipse_active, earth_rel);
     for k in 0..n {
         let t = t_start + k as f64 * step_s;
         let (sun, earth) = eph.at(t).ok_or("ephemeris lookup failed")?;
@@ -175,6 +181,7 @@ pub fn series(eph: &Ephemeris, site: &Site, hz: &[f32], t_start: f64, t_end: f64
         s.earth_up.push(sk.earth_up() as u8);
         s.eclipse_frac.push(sk.eclipse_frac as f32);
         s.sun_up.push(sk.sun_up() as u8);
+        s.sun_frac_hz.push(sk.sun_frac_hz as f32);
         s.eclipse_active.push(sk.eclipse_active() as u8);
         s.earth_rel.push((sk.earth_el - sk.earth_hz) as f32);
     }
@@ -191,10 +198,11 @@ pub fn events(s: &Series) -> Vec<Event> {
         s.t[k - 1] + w * s.step_s
     };
     for k in 1..s.t.len() {
-        let (su0, su1) = (s.sun_up[k - 1], s.sun_up[k]);
-        if su0 != su1 {
-            let t = cross(k, s.sun_frac[k - 1] as f64 - 0.5, s.sun_frac[k] as f64 - 0.5);
-            ev.push(Event { t, kind: if su1 == 1 { "sunrise" } else { "sunset" } });
+        // rise/set follow the horizon-limited fraction only (eclipses are separate events)
+        let (f0, f1) = (s.sun_frac_hz[k - 1] as f64, s.sun_frac_hz[k] as f64);
+        if (f0 >= 0.5) != (f1 >= 0.5) {
+            let t = cross(k, f0 - 0.5, f1 - 0.5);
+            ev.push(Event { t, kind: if f1 >= 0.5 { "sunrise" } else { "sunset" } });
         }
         let (e0, e1) = (s.earth_up[k - 1], s.earth_up[k]);
         if e0 != e1 {

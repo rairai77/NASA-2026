@@ -183,6 +183,56 @@ impl Engine {
         self.core.sample_heights(west, south, east, north, w as usize, h as usize).map_err(err)
     }
 
+    #[wasm_bindgen(js_name = requiredTilesPatch)]
+    pub fn required_tiles_patch(&self, lat: f64, lon: f64, size_km: f64, px: u32) -> Result<Vec<String>, JsError> {
+        self.core.required_tiles_patch(lat, lon, size_km, px as usize).map_err(err)
+    }
+
+    /// `{ centerLat, centerLon, sizeM, px, pixelM, sunAz, sunEl, data: Uint8Array(px*px*2) }`
+    #[wasm_bindgen(js_name = shadowPatch)]
+    pub fn shadow_patch(&self, lat: f64, lon: f64, size_km: f64, px: u32, t_unix: f64) -> Result<JsValue, JsError> {
+        let r = self.core.shadow_patch(lat, lon, size_km, px as usize, t_unix).map_err(err)?;
+        let o = Object::new();
+        set(&o, "centerLat", &JsValue::from(r.center_lat));
+        set(&o, "centerLon", &JsValue::from(r.center_lon));
+        set(&o, "sizeM", &JsValue::from(r.size_m));
+        set(&o, "px", &JsValue::from(r.px as u32));
+        set(&o, "pixelM", &JsValue::from(r.pixel_m));
+        set(&o, "sunAz", &JsValue::from(r.sun_az));
+        set(&o, "sunEl", &JsValue::from(r.sun_el));
+        set(&o, "data", &Uint8Array::from(&r.data[..]));
+        Ok(o.into())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn power(&self, lat: f64, lon: f64, height_m: f64, elev_deg: &[f32], t_start: f64, t_end: f64, step_s: f64, panel: JsValue) -> Result<JsValue, JsError> {
+        let p: crate::power::Panel = serde_wasm_bindgen::from_value(panel).map_err(|e| JsError::new(&format!("bad panel: {e}")))?;
+        let r = self.core.power(lat, lon, height_m, elev_deg, t_start, t_end, step_s, &p).map_err(err)?;
+        let o = Object::new();
+        set(&o, "t", &Float64Array::from(&r.t[..]));
+        set(&o, "powerW", &Float32Array::from(&r.r.power_w[..]));
+        set(&o, "energyWh", &JsValue::from(r.r.energy_wh));
+        set(&o, "whPerDay", &JsValue::from(r.r.wh_per_day));
+        set(&o, "batteryWhNeeded", &JsValue::from(r.r.battery_wh_needed));
+        set(&o, "longestDarkH", &JsValue::from(r.r.longest_dark_h));
+        set(&o, "survivesNight", &JsValue::from(r.r.survives_night));
+        Ok(o.into())
+    }
+
+    #[wasm_bindgen(js_name = requiredTilesTraverse)]
+    pub fn required_tiles_traverse(&self, start: JsValue, goal: JsValue, cell_m: Option<f64>) -> Result<Vec<String>, JsError> {
+        let a: crate::traverse::LatLon = serde_wasm_bindgen::from_value(start).map_err(|e| JsError::new(&e.to_string()))?;
+        let b: crate::traverse::LatLon = serde_wasm_bindgen::from_value(goal).map_err(|e| JsError::new(&e.to_string()))?;
+        self.core.required_tiles_traverse(a, b, cell_m).map_err(err)
+    }
+
+    pub fn traverse(&self, start: JsValue, goal: JsValue, t_start: f64, limits: JsValue, cell_m: Option<f64>) -> Result<JsValue, JsError> {
+        let a: crate::traverse::LatLon = serde_wasm_bindgen::from_value(start).map_err(|e| JsError::new(&e.to_string()))?;
+        let b: crate::traverse::LatLon = serde_wasm_bindgen::from_value(goal).map_err(|e| JsError::new(&e.to_string()))?;
+        let l: crate::traverse::Limits = serde_wasm_bindgen::from_value(limits).map_err(|e| JsError::new(&format!("bad limits: {e}")))?;
+        to_js(&self.core.traverse(a, b, t_start, &l, cell_m).map_err(err)?)
+    }
+
     #[wasm_bindgen(js_name = sunEarthAt)]
     pub fn sun_earth_at(&self, lat: f64, lon: f64, t_unix: f64) -> Result<JsValue, JsError> {
         to_js(&self.core.sun_earth_at(lat, lon, t_unix).map_err(err)?)

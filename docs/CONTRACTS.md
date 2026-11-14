@@ -186,9 +186,14 @@ Runs touching the window edges count only the part inside the window.
   "mode": "lexicographic",
   "weights": null,
   "k": 5,
-  "min_separation_km": 2
+  "min_separation_km": 2,
+  "power": null
 }
 ```
+
+- `power` (optional): a power-model `Panel` (see §7 `power`). When present, `rankRefine`/`rankPoints`
+  add `energy_wh` and `battery_wh_needed` to each result's metrics, so they can be used in filters and objectives
+  (they are not available in the coarse pass).
 
 - `window.start/end`: `YYYY-MM-DD` (00:00 UTC) or full ISO-8601 UTC. End exclusive.
 - `region.type`: `polar` (`min_lat`, `max_lat`), `circle` (`lat`, `lon`,
@@ -233,7 +238,11 @@ WASM class `Engine` (camelCase in JS):
 | `requiredTilesRect(west, south, east, north, w, h): string[]` | tiles `sampleHeights` will read for that grid |
 | `sunEarthAt(lat, lon, tUnix)` | `{ sunAz, sunEl, sunRadiusDeg, earthAz, earthEl, earthRadiusDeg, eclipseFrac, sunVecMe: [x,y,z], earthVecMe: [x,y,z] }` (unit vectors from the site, MOON_ME) |
 | `rankPoints(query, points: {id, lat, lon, elevDeg: Float32Array}[]): RankResult` | ranks arbitrary points with known horizons (curated sites, global search) |
-| `shadowPatch(lat, lon, sizeKm, px, tUnix): ShadowPatch` | lit/shade + hillshade raster for the overlay (extended) |
+| `requiredTilesPatch(lat, lon, sizeKm, px): string[]` | tiles `shadowPatch` will read (strided dry run + border) |
+| `shadowPatch(lat, lon, sizeKm, px, tUnix)` | `{ centerLat, centerLon, sizeM, px, pixelM, sunAz, sunEl, data: Uint8Array }`, `data` = px*px*2 bytes row-major, row 0 = north: `[0]` visible Sun fraction x255 (terrain shadow incl. penumbra and eclipse), `[1]` Lambert shading max(0, n.s) x255. Grid is a gnomonic ENU plane at (lat, lon): pixel (i, j) centre x = -sizeM/2 + (j+0.5)*pixelM (east), y = sizeM/2 - (i+0.5)*pixelM (north), sphere point = normalize(U + x/R E + y/R N). Heights: coarsest level with pixel <= pixelM, else finest valid; grid cached per (lat, lon, sizeKm, px) so new `tUnix` only redoes the sweep. Sun az/el are at the patch centre. Shadows are only as good as the grid: use pixelM <= ~20-30 m for local patches (coarser grids alias small relief). |
+| `power(lat, lon, heightM, elevDeg, tStart, tEnd, stepS, panel)` | `{ t: Float64Array, powerW: Float32Array, energyWh, whPerDay, batteryWhNeeded, longestDarkH, survivesNight }`. `panel = { kind: "vertical_fixed"\|"vertical_tracking"\|"horizontal", azimuthDeg?, areaM2, efficiency, loadW, depthOfDischarge, batteryWh? }`. P = 1361 * area * eff * sunFrac * max(0, cos incidence) (tracking: cos el; fixed: cos el * max(0, cos(az - panelAz)); horizontal: sin el), zero when the Sun centre is below the horizon. batteryWhNeeded = loadW * longestDarkH / DoD; survivesNight = batteryWh >= needed (if batteryWh omitted: true only when there is no dark period). snake_case panel keys are accepted too. |
+| `requiredTilesTraverse(start, goal, cellM?): string[]` | tiles the traverse grid reads |
+| `traverse(start{lat,lon}, goal{lat,lon}, tStart, limits{maxSlopeDeg, speedMps, requireSun, requireEarth, maxHours}, cellM?)` | `{ path: [{lat, lon, t}], distanceM, durationS, sunlitFrac, earthFrac, status: "ok"\|"no_path"\|"timeout", cellM, px }`. 8-connected A* (earliest arrival, waiting allowed) on a gnomonic grid around the start/goal box (default 20 m cells, at most 512 px per side, grid at most 15 km); slope relative to the sphere, cost dt = dist/speed * (1 + (slope/max)^2); `requireSun`/`requireEarth`: destination cell must be sunlit / Earth-up (visible fraction >= 0.5, from the shadow sweep in 1 h slices) at departure and arrival, otherwise the rover waits. `timeout` = nothing reachable within maxHours. Path decimated to <= ~400 points. |
 
 `VisResult`:
 ```
@@ -242,6 +251,8 @@ WASM class `Engine` (camelCase in JS):
   metrics: { <window metric name>: number },
   events: [ { t: number, kind: "sunrise"|"sunset"|"earthrise"|"earthset"|"eclipse_start"|"eclipse_end" } ] }
 ```
+`sunrise`/`sunset` follow the horizon-limited Sun fraction only (crossing 0.5, eclipse factor excluded);
+eclipses are reported by `eclipse_start`/`eclipse_end`. Window metrics and the Sun-up bitsets still include eclipses.
 `Candidate`: `{ cell, lat, lon, metrics: {...} }`. `RankResult`:
 `{ results: [ { rank, cell, lat, lon, metrics: {...}, coarseMetrics: {...} } ], considered, passedFilters, resolutionM, model: "terrain" }`.
 `EllipseResult`: `{ points: [ {lat, lon, metrics} ], summary: { <metric>: {min, median, max} } }`.

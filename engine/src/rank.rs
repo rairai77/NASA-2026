@@ -69,10 +69,14 @@ pub struct PointIn {
 }
 
 /// Metrics for a site with a known horizon over a window (fine series).
-pub fn point_metrics(eph: &Ephemeris, lat: f64, lon: f64, z_m: f64, h: f64, hz: &[f32], t0: f64, t1: f64, step_s: f64) -> Res<Metrics> {
+pub fn point_metrics(eph: &Ephemeris, lat: f64, lon: f64, z_m: f64, h: f64, hz: &[f32], t0: f64, t1: f64, step_s: f64, power: Option<&crate::power::Panel>) -> Res<Metrics> {
     let site = Site::new(lat, lon, R + z_m + h);
     let s = series(eph, &site, hz, t0, t1, step_s)?;
-    Ok(window_metrics(&s))
+    let mut m = window_metrics(&s);
+    if let Some(p) = power {
+        crate::power::add_metrics(&mut m, &s, p)?;
+    }
+    Ok(m)
 }
 
 const STATIC_KEYS: &[&str] = &["lat", "lon", "elev_m", "slope_deg", "psr_dist_km", "fault_dist_km"];
@@ -228,7 +232,7 @@ pub fn rank_refine(ix: &Index, eph: &Ephemeris, q: &ParsedQuery, cands: &[Candid
         }
         let hz = ix.cell_horizon(c.cell)?;
         let z = ix.static_value("elev_m", c.cell).unwrap_or(0.0);
-        let mut m = point_metrics(eph, ix.lat[c.cell], ix.lon[c.cell], z, q.height_m, &hz, q.t_start, q.t_end, REFINE_STEP_S)?;
+        let mut m = point_metrics(eph, ix.lat[c.cell], ix.lon[c.cell], z, q.height_m, &hz, q.t_start, q.t_end, REFINE_STEP_S, q.power.as_ref())?;
         m.extend(static_metrics(ix, c.cell));
         Ok((m, c.metrics.clone()))
     });
@@ -246,7 +250,7 @@ pub fn rank_points(eph: &Ephemeris, q: &ParsedQuery, pts: &[PointIn], resolution
         if p.elev_deg.len() < 4 {
             bail!("point '{}': horizon needs at least 4 azimuth bins", p.id);
         }
-        let mut m = point_metrics(eph, p.lat, p.lon, p.site_elev_m, q.height_m, &p.elev_deg, q.t_start, q.t_end, REFINE_STEP_S)?;
+        let mut m = point_metrics(eph, p.lat, p.lon, p.site_elev_m, q.height_m, &p.elev_deg, q.t_start, q.t_end, REFINE_STEP_S, q.power.as_ref())?;
         m.insert("lat".into(), p.lat);
         m.insert("lon".into(), wrap180(p.lon));
         m.insert("elev_m".into(), p.site_elev_m);

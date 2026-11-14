@@ -16,9 +16,12 @@ pub mod metrics;
 #[cfg(feature = "python")]
 pub mod native_io;
 pub mod par;
+pub mod patch;
+pub mod power;
 pub mod query;
 pub mod rank;
 pub mod terrain;
+pub mod traverse;
 pub mod visibility;
 
 #[cfg(test)]

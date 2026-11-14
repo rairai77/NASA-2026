@@ -41,7 +41,7 @@ pub fn default_max_dist_m(lat_deg: f64) -> f64 {
 }
 
 #[inline]
-fn chain_for(t: &Terrain, d: f64) -> &[usize] {
+pub(crate) fn chain_for(t: &Terrain, d: f64) -> &[usize] {
     if d < 10_000.0 {
         &t.chains[0]
     } else if d < 60_000.0 {

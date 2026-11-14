@@ -73,3 +73,29 @@ Reproduce: `cd pipeline && uv run python validate_pgda.py` (writes `pipeline/wor
 The same data feeds the globe layers (`pipeline/layers.py`), which also use Diviner annual maximum surface and
 average (2 cm) temperature from the LRO Diviner Polar Resource Product (75-90S, ~500 m triangle mesh). Spot check:
 Shackleton floor Tmax 85.5 K, Tavg 52 K (PSR cold trap); Malapert Tmax 243 K.
+
+## Engine (Rust) validation
+
+Scripts live in `engine/parity/`; run them with `pipeline/.venv/bin/python` (it has the `lunar_engine` wheel) and, for
+the WASM side, after `scripts/build-wasm.sh`.
+
+**Engine vs JPL Horizons** (`horizons_check.py`): `Engine.sun_earth_at` (observer on the 1737.4 km sphere, height 0)
+against Horizons airless apparent az/el (`CENTER='coord@301'`, `QUANTITIES=4`), 3 sites (Apollo 11, polar
+-89.45/222.69, Malapert-ish -85.99/2.84) x 20 times 2026-2030, Sun and Earth. Max |daz*cos(el)| and max |del| over all
+rows: 3e-5 deg (limit 0.05 deg). PASS.
+
+**Native vs WASM** (`run_parity.py`): 20 sites (12 polar from `sites.json` incl. IM-1/2, Chandrayaan-3, Artemis III
+regions and Shackleton/de Gerlache ridges, plus Apollo 11/12/14/15/16/17, SLIM, Chang'e 4), real tiles, 720-az horizon
+at h = 2 m and 900 s visibility metrics over 2026-03-01..03-31, Python wheel vs `wasm` in Node. Max difference:
+horizon 0 deg, hours metrics 0.000 min, angle metrics 0 deg (bit-identical; limits 0.01 deg and 1 min). PASS.
+
+**Apollo 11 sanity** (`apollo11_lunations.py`): Sun-up hours over 12 consecutive synodic lunations (29.5306 d) from
+2026-01-01: 353.2, 353.5, 350.8, 354.2, 354.8, 355.0, 355.0, 354.8, 351.2, 354.2, 353.8, 353.2; mean 353.6 h = 14.74 d
+(half a lunation is 354.3 h; the horizon at the site is slightly above flat). PASS.
+
+**Shadow patch vs per-pixel horizons** (`phase2_check.mjs`, ridge at -88.79/124.5, Sun 0.6 deg above the centre
+horizon, 150 random pixels, reference = full 720-az horizon + visibility per pixel): with a 15 km patch at 768 px
+(19.5 m, same as the DEM) mean |diff| of the visible fraction 0.013, lit/shaded agreement 98.7 %. With a 30 km patch at
+512 px (58.6 m) the agreement falls to 77 % (mean |diff| 0.23): terrain is under-sampled and narrow shadows alias, so use
+pixels of about 20-30 m for local patches. Timing in WASM (Node, single thread, 1024 px, 30 km): first call incl. height
+grid 200 ms, later times ~95 ms; 512 px ~32 ms.

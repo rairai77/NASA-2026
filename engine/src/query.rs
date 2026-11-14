@@ -54,6 +54,8 @@ pub struct Query {
     pub weights: Option<Vec<f64>>,
     pub k: Option<usize>,
     pub min_separation_km: Option<f64>,
+    /// Optional power model; enables `energy_wh` and `battery_wh_needed`.
+    pub power: Option<crate::power::Panel>,
 }
 
 pub struct ParsedQuery {
@@ -67,6 +69,7 @@ pub struct ParsedQuery {
     pub weights: Vec<f64>,
     pub k: usize,
     pub min_sep_m: f64,
+    pub power: Option<crate::power::Panel>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -93,7 +96,7 @@ pub const COARSE_METRICS: &[&str] = &[
     "sun_hours", "sun_frac", "earth_hours", "both_hours", "longest_sun_h", "longest_dark_h", "longest_earth_h",
     "longest_no_earth_h", "longest_both_h",
 ];
-pub const FINE_ONLY_METRICS: &[&str] = &["mean_sun_el_deg", "min_sun_el_deg", "sun_disc_frac_mean", "eclipse_hours"];
+pub const FINE_ONLY_METRICS: &[&str] = &["mean_sun_el_deg", "min_sun_el_deg", "sun_disc_frac_mean", "eclipse_hours", "energy_wh", "battery_wh_needed"];
 
 pub fn is_known_metric(m: &str) -> bool {
     STATIC_METRICS.contains(&m) || COARSE_METRICS.contains(&m) || FINE_ONLY_METRICS.contains(&m)
@@ -232,6 +235,7 @@ impl Query {
             weights,
             k: self.k.unwrap_or(5).max(1),
             min_sep_m: self.min_separation_km.unwrap_or(2.0).max(0.0) * 1000.0,
+            power: self.power.clone(),
         })
     }
 }
