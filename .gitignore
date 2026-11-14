@@ -1,0 +1,19 @@
+# data
+pipeline/raw/
+pipeline/work/
+web/public/data/
+*.img
+*.IMG
+*.bsp
+*.bpc
+# build
+target/
+engine/pkg*/
+node_modules/
+dist/
+.wrangler/
+__pycache__/
+.venv/
+*.pyc
+.DS_Store
+.dev.vars
