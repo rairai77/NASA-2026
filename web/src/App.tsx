@@ -9,7 +9,8 @@ import { ValidationModal } from './components/ValidationModal.tsx';
 import { buildCsv, download, type CsvRow } from './lib/csv.ts';
 import { encodeState } from './lib/share.ts';
 import { DAY, HOUR } from './lib/time.ts';
-import { bootstrap, refreshData, setCursor, stubOf, toast, useStore, windowOf, useActiveIds } from './store.ts';
+import { applyNasaScreening, bootstrap, dataKey, refreshData, saveScenario, setCursor, stubOf, toast, useStore, windowOf, useActiveIds } from './store.ts';
+import { Tour } from './components/Tour.tsx';
 
 const Globe = lazy(() => import('./globe/Globe.tsx'));
 
@@ -49,9 +50,10 @@ function TopBar() {
         </button>
         <button className="btn" onClick={() => { navigator.clipboard?.writeText(location.href).then(() => toast('Link copied to clipboard'), () => toast('Copy failed: copy the address bar URL')); }}>Share</button>
         <button className="btn" onClick={exportCsv} title="Export timeline and metrics of the selected sites as CSV">CSV</button>
+        {educator && <button className="btn" onClick={() => useStore.setState({ tourStep: 0 })}>Start tour</button>}
         <button className="btn ghost" onClick={() => useStore.setState({ validationOpen: true })}>How we know it{'’'}s right</button>
       </div>
-      <div className="chiprow"><Chips /></div>
+      <div className="chiprow"><Chips /><button className="chip preset" onClick={applyNasaScreening} title="Adds: slope ≤ 10° (proxy for landing slope), Earth visible \u2265 25% and Sun \u2265 5% of the window, region within 6° of the pole. Approximation of public Artemis screening criteria.">NASA Artemis screening (approx.)</button></div>
     </header>
   );
 }
@@ -72,6 +74,13 @@ export default function App() {
   useEffect(() => useStore.subscribe((s, p) => { if (s.targets !== p.targets && (s.selected || s.compare.length)) refreshData(); }), []);
   void ids;
 
+  // launch-slip preset: once the shifted window has been computed for the selected site, save it as B
+  useEffect(() => useStore.subscribe((s) => {
+    if (!s.pendingSlip || !s.selected) return;
+    const d = s.data[s.selected];
+    if (d?.vis && d.key === dataKey(s.query) && !d.loading) { useStore.setState({ pendingSlip: false }); saveScenario('B'); }
+  }), []);
+
   // URL hash: shareable state
   useEffect(() => {
     const id = setInterval(() => { try { history.replaceState(null, '', currentHash()); } catch { /* ignore */ } }, 1500);
@@ -87,7 +96,9 @@ export default function App() {
         const dt = Math.min(0.1, (now - last) / 1000);
         const [, b] = windowOf(s.query);
         const next = s.cursor + dt * s.speed;
-        if (next >= b) { useStore.setState({ playing: false, cursor: b }); } else useStore.setState({ cursor: next });
+        const stop = s.playUntil !== null ? Math.min(b, s.playUntil) : b;
+        if (next >= stop) useStore.setState({ playing: false, cursor: stop, playUntil: null });
+        else useStore.setState({ cursor: next });
       }
       last = now;
       raf = requestAnimationFrame(tick);
@@ -125,6 +136,7 @@ export default function App() {
       <Timeline />
       <QueryBuilder />
       <ValidationModal />
+      <Tour />
       <Toast />
     </div>
   );

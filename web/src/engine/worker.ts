@@ -4,7 +4,7 @@
 import * as Comlink from 'comlink';
 import type {
   CuratedSite, EllipseArgs, EllipseResult, EngineApi, HorizonResult, InitInfo, Mission, Progress,
-  Query, RankResult, Site, SunEarth, VisResult,
+  Query, RankResult, ShadowPatch, Site, SunEarth, VisResult,
 } from './api.ts';
 import { loadFaults, loadMissions, loadSites, fetchJsonMaybe } from './catalog.ts';
 import { MockEngine, parseWhen } from './mock.ts';
@@ -34,6 +34,8 @@ interface WasmEngine {
   ellipse(lat: number, lon: number, a: number, b: number, rot: number, n: number, h: number, tS: number, tE: number, stepS: number): EllipseResult;
   sampleHeights(w: number, s: number, e: number, n: number, nw: number, nh: number): Float32Array;
   sunEarthAt(lat: number, lon: number, t: number): SunEarth;
+  shadowPatch?(lat: number, lon: number, sizeKm: number, px: number, t: number): unknown;
+  requiredTilesPatch?(lat: number, lon: number, sizeKm: number, px: number): string[];
   threads?: () => number;
 }
 interface WasmModule {
@@ -53,7 +55,37 @@ interface IndexManifest {
 // ---------------------------------------------------------------------------------------
 // Data fetching: in-memory map + Cache API, gunzip via DecompressionStream
 // ---------------------------------------------------------------------------------------
-const CACHE_NAME = 'lunar-data-v1';
+let CACHE_NAME = 'lunar-data-v1';
+declare const __BUILD_TIME__: string;
+
+function fnv(s: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(36);
+}
+
+/** Cache name = data version: data/version.json if present, else a hash of the terrain manifest + ephemeris
+ *  header, else the build time. Old 'lunar-data-*' caches are deleted. */
+async function setupCache(base: string): Promise<string> {
+  const txt = async (p: string) => {
+    try {
+      const r = await fetch(`${base}data/${p}`, { cache: 'no-cache' });
+      return r.ok && !(r.headers.get('content-type') ?? '').includes('html') ? await r.text() : null;
+    } catch { return null; }
+  };
+  const v = await txt('version.json');
+  let version: string;
+  if (v) version = fnv(v);
+  else {
+    const [a, b] = await Promise.all([txt('terrain/manifest.json'), txt('ephem/ephem.json')]);
+    version = a || b ? fnv((a ?? '') + (b ?? '')) : `b${fnv(typeof __BUILD_TIME__ === 'string' ? __BUILD_TIME__ : '0')}`;
+  }
+  CACHE_NAME = `lunar-data-${version}`;
+  try {
+    for (const k of await caches.keys()) if (k.startsWith('lunar-data-') && k !== CACHE_NAME) await caches.delete(k);
+  } catch { /* Cache API unavailable */ }
+  return version;
+}
 const mem = new Map<string, Promise<Uint8Array | null>>();
 
 async function gunzip(buf: ArrayBuffer): Promise<Uint8Array> {
@@ -127,6 +159,7 @@ class RealEngine implements EngineApi {
   /** Returns null when the real engine can't start (so the caller falls back to mock). */
   async tryInit(baseUrl: string): Promise<InitInfo | null> {
     this.base = baseUrl;
+    await setupCache(baseUrl);
     const loader = pkgLoaders['./pkg/lunar_engine.js'];
     if (!loader) { this.notes.push('wasm pkg not built (web/src/engine/pkg missing)'); return null; }
     const ephemMeta = await getBytes(`${baseUrl}data/ephem/ephem.json`);
@@ -290,6 +323,15 @@ class RealEngine implements EngineApi {
   async sunEarthAt(lat: number, lon: number, t: number): Promise<SunEarth> {
     return this.eng.sunEarthAt(lat, lon, t);
   }
+
+  async shadowPatch(lat: number, lon: number, sizeKm: number, px: number, t: number): Promise<ShadowPatch> {
+    if (!this.terrain || !this.eng.shadowPatch) return this.mock.shadowPatch(lat, lon, sizeKm, px, t);
+    const keys = this.eng.requiredTilesPatch ? this.eng.requiredTilesPatch(lat, lon, sizeKm, px) : this.eng.requiredTilesArea(lat, lon, sizeKm / 2 + 20);
+    await this.ensureTiles(keys);
+    const r = this.eng.shadowPatch(lat, lon, sizeKm, px, t) as { data?: Uint8Array; px?: number; centerLat?: number; centerLon?: number } | Uint8Array;
+    if (r instanceof Uint8Array) return { lat, lon, sizeKm, px, data: r };
+    return { lat: r.centerLat ?? lat, lon: r.centerLon ?? lon, sizeKm, px: r.px ?? px, data: r.data as Uint8Array };
+  }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -322,6 +364,7 @@ const api: EngineApi = {
   sampleHeights: (...a) => impl.sampleHeights(...a),
   sunEarthAt: (la, lo, t) => impl.sunEarthAt(la, lo, t),
   faults: () => impl.faults(),
+  shadowPatch: (la, lo, s, px, t) => impl.shadowPatch(la, lo, s, px, t),
 };
 
 Comlink.expose(api);

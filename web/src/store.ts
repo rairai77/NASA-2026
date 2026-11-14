@@ -2,9 +2,9 @@ import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 import type { CuratedSite, HorizonResult, InitInfo, Mission, Progress, Query, RankResult, Site, VisResult } from './engine/api.ts';
 import { getEngine, rankWithProgress } from './engine/client.ts';
-import { clamp, parseWhen, toDay } from './lib/time.ts';
+import { DAY, clamp, parseWhen, toDay } from './lib/time.ts';
 import { decodeState, type ShareState, type TargetStub } from './lib/share.ts';
-import { defaultQuery, mergeQuery } from './query/query.ts';
+import { addDays, defaultQuery, mergeQuery } from './query/query.ts';
 
 export interface Target {
   id: string;
@@ -19,10 +19,27 @@ export interface Target {
 }
 export interface TargetData { horizon?: HorizonResult; vis?: VisResult; key?: string; loading?: boolean; error?: string }
 
-export type LeftTab = 'results' | 'sites' | 'layers';
+export type LeftTab = 'results' | 'sites' | 'layers' | 'replay' | 'diff';
 export const MAX_COMPARE = 4;
 
-export interface Layers { sites: boolean; results: boolean; faults: boolean; psr: boolean; keepout: boolean; keepoutKm: number }
+export interface Layers { sites: boolean; results: boolean; faults: boolean; keepout: boolean; keepoutKm: number; shadows: boolean }
+
+export interface LayerDef {
+  id: string; title: string; units: string; source: string; citation?: string; maxLevel: number;
+  rectangle: [number, number, number, number]; path: string;
+  legend: { min: number; max: number; stops: [number, string][] };
+  opacity: number; tileLatLimits?: Record<string, number>;
+}
+export interface LayerState { on: boolean; opacity: number }
+
+export interface Marker { t: number; label: string; kind: 'landing' | 'pred' | 'end' }
+export interface ReplayInfo {
+  id: string; name: string; landed: number; predSunset: number | null; reportedEnd: number | null; deltaH: number | null;
+  endKind: string; endReason: string; source: 'precomputed' | 'live';
+}
+export interface Scenario {
+  label: 'A' | 'B'; query: Query; target: Target; vis: VisResult; metrics: Record<string, number | undefined>; note: string;
+}
 
 interface State {
   info: InitInfo | null;
@@ -57,6 +74,16 @@ interface State {
   toast: { msg: string; id: number } | null;
   ellipseDraw: { lat: number; lon: number; a: number; b: number; rot: number } | null;
   fly: { id: string | null; global?: boolean; nonce: number } | null;
+  layerDefs: LayerDef[];
+  layerState: Record<string, LayerState>;
+  exaggeration: number;
+  markers: Marker[];
+  replay: ReplayInfo | null;
+  playUntil: number | null;
+  scenA: Scenario | null;
+  scenB: Scenario | null;
+  pendingSlip: boolean;
+  tourStep: number | null;
   initialCam: ShareState['cam'];
 }
 
@@ -75,7 +102,8 @@ export const useStore = create<State>(() => ({
   query: q0, unparsed: [], warnings: [], parsing: false, results: null, ranking: false, progress: null,
   selected: null, compare: [], data: {},
   cursor: clamp(restored?.t ?? w0 + (w1 - w0) * 0.1, w0, w1), playing: false, speed: 6 * 3600, view: [w0, w1],
-  layers: { sites: true, results: true, faults: false, psr: false, keepout: false, keepoutKm: 5 },
+  layers: { sites: true, results: true, faults: false, keepout: false, keepoutKm: 5, shadows: false },
+  layerDefs: [], layerState: {}, exaggeration: 1, markers: [], replay: null, playUntil: null, scenA: null, scenB: null, pendingSlip: false, tourStep: null,
   educator: restored?.ed ?? false, leftTab: (restored?.tab as LeftTab) ?? 'results',
   fpOpen: false, validationOpen: false, builderOpen: false, toast: null, ellipseDraw: null, fly: null,
   initialCam: restored?.cam ?? null,
@@ -117,7 +145,10 @@ export function setQuery(q: Query, rank = true) {
   set((s) => ({ query: q, view: [a, b], cursor: clamp(s.cursor, a, b) }));
   if (rank) scheduleRank();
 }
-export function patchQuery(p: Partial<Query>, rank = true) { setQuery({ ...get().query, ...p }, rank); }
+export function patchQuery(p: Partial<Query>, rank = true) {
+  if (get().markers.length) set({ markers: [], replay: null, playUntil: null });
+  setQuery({ ...get().query, ...p }, rank);
+}
 
 let rankTimer: ReturnType<typeof setTimeout> | undefined;
 export function scheduleRank(delay = 350) {
@@ -127,6 +158,7 @@ export function scheduleRank(delay = 350) {
 
 let rankSeq = 0;
 let keepRestoredSelection = false;
+export function keepSelection() { keepRestoredSelection = true; }
 export async function runRank() {
   const seq = ++rankSeq;
   const q = get().query;
@@ -252,6 +284,7 @@ export async function bootstrap() {
   const eng = getEngine();
   const info = await eng.init('/');
   const [sites, missions, curated] = await Promise.all([eng.sites(), eng.missions(), eng.curated().catch(() => ({}))]);
+  loadLayerDefs();
   const ts: Target[] = sites.map((s) => ({ id: s.id, name: s.name, lat: s.lat, lon: s.lon, kind: 'site', group: s.group, representative: s.representative }));
   registerTargets(ts);
   set({ info, sites, missions, curated });
@@ -266,3 +299,105 @@ export async function bootstrap() {
 }
 
 if (import.meta.env.DEV) (window as unknown as { __store: typeof useStore }).__store = useStore;
+
+
+// ---------------------------------------------------------------------------------------
+// Context layers (layers/manifest.json)
+async function loadLayerDefs() {
+  try {
+    const r = await fetch('/data/layers/manifest.json');
+    if (!r.ok || (r.headers.get('content-type') ?? '').includes('html')) return;
+    const defs = (await r.json()) as LayerDef[];
+    const state: Record<string, LayerState> = {};
+    for (const d of defs) state[d.id] = { on: false, opacity: d.opacity ?? 1 };
+    set({ layerDefs: defs, layerState: state });
+  } catch { /* no layers yet */ }
+}
+export function setLayerState(id: string, p: Partial<LayerState>) {
+  set((s) => ({ layerState: { ...s.layerState, [id]: { ...s.layerState[id], ...p } } }));
+}
+
+// ---------------------------------------------------------------------------------------
+// Mission replay
+interface MissionPred { predicted_sunset_utc?: string | null; sunset_minus_end_h?: number | null }
+let predP: Promise<Record<string, MissionPred> | null> | undefined;
+function loadPred() {
+  return (predP ??= fetch('/data/missions_pred.json').then(async (r) => (r.ok && !(r.headers.get('content-type') ?? '').includes('html') ? ((await r.json()) as Record<string, MissionPred>) : null)).catch(() => null));
+}
+const isoSec = (t: number) => new Date(t * 1000).toISOString().slice(0, 19) + 'Z';
+
+export async function startReplay(mid: string) {
+  const m = get().missions.find((x) => x.id === mid);
+  if (!m) return;
+  const landed = parseWhen(m.landed_utc);
+  const end = m.end_utc ? parseWhen(m.end_utc) : null;
+  const kind = (m as unknown as { end_kind?: string }).end_kind ?? '';
+  let predSunset: number | null = null;
+  let source: ReplayInfo['source'] = 'precomputed';
+  const pred = (await loadPred())?.[mid];
+  if (pred?.predicted_sunset_utc) predSunset = parseWhen(pred.predicted_sunset_utc);
+  else {
+    source = 'live';
+    try {
+      const v = await getEngine().visibility(m.lat, m.lon, landed - 2 * DAY, landed + 20 * DAY, { stepS: 900 });
+      predSunset = v.events.find((e) => e.kind === 'sunset' && e.t > landed)?.t ?? null;
+    } catch (e) { console.warn(e); }
+  }
+  const tid = `m:${mid}`;
+  registerTargets([{ id: tid, name: m.name, lat: m.lat, lon: m.lon, kind: 'point', group: 'Mission replay' }]);
+  const q: Query = { ...get().query, window: { start: isoSec(landed - DAY), end: isoSec(landed + 16 * DAY) } };
+  const markers: Marker[] = [{ t: landed, label: 'Landing', kind: 'landing' }];
+  if (predSunset) markers.push({ t: predSunset, label: 'Predicted sunset', kind: 'pred' });
+  if (end) markers.push({ t: end, label: 'Reported end', kind: 'end' });
+  const [a, b] = window_(q);
+  set({
+    query: q, view: [a, b], selected: tid, compare: [], markers, leftTab: 'replay',
+    replay: { id: mid, name: m.name, landed, predSunset, reportedEnd: end, deltaH: predSunset && end ? (predSunset - end) / 3600 : null, endKind: kind, endReason: m.end_reason, source },
+    cursor: landed, playUntil: predSunset, speed: DAY, playing: true,
+  });
+  flyTo(tid);
+}
+
+// ---------------------------------------------------------------------------------------
+// Scenarios A/B and launch slip
+export function dataKey(q = get().query) {
+  const [t0, t1] = window_(q);
+  return `${t0}|${t1}|${seriesStep(q)}|${q.height_m}`;
+}
+
+export function saveScenario(which: 'A' | 'B'): boolean {
+  const s = get();
+  const t = s.selected ? s.targets[s.selected] : undefined;
+  const d = s.selected ? s.data[s.selected] : undefined;
+  if (!t || !d?.vis || d.key !== dataKey()) { toast('Select a site and wait for its timeline to finish computing.'); return false; }
+  const scen: Scenario = {
+    label: which, query: JSON.parse(JSON.stringify(s.query)), target: { ...t }, vis: d.vis,
+    metrics: { ...(t.metrics ?? {}), ...(d.vis.metrics as Record<string, number | undefined>) }, note: '',
+  };
+  set(which === 'A' ? { scenA: scen } : { scenB: scen });
+  return true;
+}
+
+export function slipLaunch(weeks: number) {
+  if (!saveScenario('A')) return;
+  const q = get().query;
+  const shift = Math.round(weeks * 7);
+  keepSelection();
+  setQuery({ ...q, window: { start: addDays(q.window.start, shift), end: addDays(q.window.end, shift) } }, true);
+  set({ pendingSlip: true, leftTab: 'diff' });
+}
+
+export function applyNasaScreening() {
+  const q = get().query;
+  const [a, b] = window_(q);
+  const winH = (b - a) / 3600;
+  const drop = new Set(['slope_deg', 'earth_hours', 'sun_frac']);
+  const filters = [
+    ...q.filters.filter((f) => !drop.has(f.metric)),
+    { metric: 'slope_deg', op: '<=' as const, value: 10 },
+    { metric: 'earth_hours', op: '>=' as const, value: Math.round(0.25 * winH) },
+    { metric: 'sun_frac', op: '>=' as const, value: 0.05 },
+  ];
+  patchQuery({ filters, region: { type: 'polar', min_lat: -90, max_lat: -84 } });
+  toast('NASA Artemis screening (approx.): slope ≤ 10°, Earth ≥ 25% and Sun ≥ 5% of the window, within 6° of the pole.');
+}

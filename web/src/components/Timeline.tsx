@@ -4,13 +4,14 @@ import type { VisResult } from '../engine/api.ts';
 import { DAY, HOUR, clamp, fmtUTC } from '../lib/time.ts';
 import { select, setCursor, toggleCompare, useActiveIds, useStore, windowOf } from '../store.ts';
 import { COLORS } from './LeftPanel.tsx';
+import { Why } from './ui.tsx';
 
 const ROW_H = 34;
 const AXIS_H = 24;
 const LABEL_W = 176;
 export const SPEEDS: [string, number][] = [['1 h/s', HOUR], ['6 h/s', 6 * HOUR], ['1 d/s', DAY]];
 
-function drawRow(g: CanvasRenderingContext2D, v: VisResult | undefined, x: (t: number) => number, v0: number, v1: number, W: number, y: number) {
+export function drawRow(g: CanvasRenderingContext2D, v: VisResult | undefined, x: (t: number) => number, v0: number, v1: number, W: number, y: number) {
   g.fillStyle = 'rgba(255,255,255,0.045)';
   g.fillRect(0, y + 2, W, 10); g.fillRect(0, y + 13, W, 10); g.fillRect(0, y + 24, W, 7);
   if (!v || v.t.length < 2) return;
@@ -64,6 +65,7 @@ export function Timeline() {
   const view = useStore((s) => s.view);
   const query = useStore((s) => s.query);
   const cursor = useStore((s) => s.cursor);
+  const markers = useStore((s) => s.markers);
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [W, setW] = useState(800);
@@ -179,7 +181,7 @@ export function Timeline() {
       <div className="tl-head">
         <PlayControls />
         <div className="tl-right">
-          <span className="legend"><i style={{ background: COLORS.sun }} />Sun <i style={{ background: COLORS.earth }} />Earth <i style={{ background: COLORS.both }} />both <i style={{ background: COLORS.eclipse }} />eclipse</span>
+          <span className="legend"><Why id="timeline-bands" /><i style={{ background: COLORS.sun }} />Sun <i style={{ background: COLORS.earth }} />Earth <i style={{ background: COLORS.both }} />both <i style={{ background: COLORS.eclipse }} />eclipse</span>
           {zoomed && <button className="btn sm" onClick={() => useStore.setState({ view: win })}>Reset zoom</button>}
           <span className="keys">wheel = zoom {'·'} drag = pan {'·'} drag ruler = scrub</span>
         </div>
@@ -202,6 +204,11 @@ export function Timeline() {
         <div className="tl-plot" ref={wrapRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={() => setHover(null)} style={{ height: H }}>
           <canvas ref={canvasRef} style={{ width: W, height: H }} />
           {hover !== null && !drag.current && <div className="tl-hover" style={{ left: hover }}><span>{fmtUTC(tOf(hover))}</span></div>}
+          {markers.filter((m) => m.t >= view[0] && m.t <= view[1]).map((m) => (
+            <div key={m.kind} className={`tl-marker ${m.kind}`} style={{ left: xOf(m.t) }} title={`${m.label}: ${fmtUTC(m.t)}`}>
+              <span>{m.label}</span>
+            </div>
+          ))}
           {cursor >= view[0] && cursor <= view[1] && (
             <div className="tl-cursor" style={{ left: xOf(cursor) }}><span className="handle" /></div>
           )}

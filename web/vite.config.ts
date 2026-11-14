@@ -19,7 +19,7 @@ export default defineConfig({
       })),
     }),
   ],
-  define: { CESIUM_BASE_URL: JSON.stringify('/cesium/') },
+  define: { CESIUM_BASE_URL: JSON.stringify('/cesium/'), __BUILD_TIME__: JSON.stringify(new Date().toISOString()) },
   server: { headers: isolationHeaders, port: 5173 },
   preview: { headers: isolationHeaders, port: 4173 },
   worker: { format: 'es' },

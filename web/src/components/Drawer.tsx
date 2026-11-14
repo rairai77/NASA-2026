@@ -56,7 +56,7 @@ export function Drawer() {
 
       <section>
         <div className="sec-h">
-          <h3>{edu ? 'Skyline' : 'Horizon'}<Why id="pole" /></h3>
+          <h3>{edu ? 'Skyline' : 'Horizon'}<Why id="horizon-plot" /><Why id="why-pole-hard" /><Why id="sun-skims-horizon" /></h3>
           <div className="seg" role="group">
             <button className={pmode === 'polar' ? 'on' : ''} onClick={() => setPmode('polar')}>Polar</button>
             <button className={pmode === 'panorama' ? 'on' : ''} onClick={() => setPmode('panorama')}>Panorama</button>
@@ -86,7 +86,7 @@ export function Drawer() {
             {STATIC_METRICS.map((k) => <tr key={k}><th>{metricLabel(k, edu)}</th><td>{fmtMetric(k, m[k])}</td></tr>)}
           </tbody>
         </table>
-        <p className="hint">Sun up = at least half the disc above the skyline. {edu && 'Eclipses are Earth passing in front of the Sun.'}<Why id="eclipse" /></p>
+        <p className="hint">Sun up = at least half the disc above the skyline. {edu && 'Eclipses are Earth passing in front of the Sun.'}<Why id="eclipse" /><Why id="both-up" /></p>
       </section>
     </aside>
   );

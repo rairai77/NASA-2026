@@ -5,7 +5,7 @@ import { getEngine } from '../engine/client.ts';
 import { fmtMetric, metricLabel } from '../query/metrics.ts';
 import { useStore, windowOf, type Target } from '../store.ts';
 import { MetricSelectAll } from './MetricSelectAll.tsx';
-import { NumInput } from './ui.tsx';
+import { NumInput, Why } from './ui.tsx';
 
 const SUMMARY = ['sun_hours', 'longest_dark_h', 'earth_hours', 'longest_both_h', 'slope_deg'];
 
@@ -32,7 +32,7 @@ export function EllipsePanel({ target }: { target: Target }) {
 
   return (
     <section className="ellipse">
-      <h3>Landing ellipse <small>worst / median / best over {Math.round(n)} points</small></h3>
+      <h3>Landing ellipse<Why id="ellipse" /> <small>worst / median / best over {Math.round(n)} points</small></h3>
       <div className="grid4">
         <label>Semi-major (m)<NumInput value={a} min={10} max={5000} width={64} onChange={setA} /></label>
         <label>Semi-minor (m)<NumInput value={b} min={10} max={5000} width={64} onChange={setB} /></label>

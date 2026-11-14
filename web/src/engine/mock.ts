@@ -4,7 +4,7 @@
 // analytic approximations, NOT real data.
 import type {
   CuratedSite, EllipseArgs, EllipseResult, EngineApi, HorizonResult, InitInfo, Metrics, Mission,
-  Progress, Query, RankEntry, RankResult, Site, SkyEvent, SunEarth, VisResult,
+  Progress, Query, RankEntry, RankResult, ShadowPatch, Site, SkyEvent, SunEarth, VisResult,
 } from './api.ts';
 import { MOON_R_M } from './api.ts';
 import { loadFaults, loadMissions, loadSites } from './catalog.ts';
@@ -410,6 +410,44 @@ export class MockEngine implements EngineApi {
       summary[k] = { min: vals[0], median: vals[Math.floor(vals.length / 2)], max: vals[vals.length - 1] };
     }
     return { points, summary };
+  }
+
+  /** Mock patch: procedural crater-ish relief, ray-marched toward the Sun. Same layout as the real one. */
+  async shadowPatch(lat: number, lon: number, sizeKm: number, px: number, t: number): Promise<ShadowPatch> {
+    const n = Math.min(px, 384);
+    const se = await this.sunEarthAt(lat, lon, t);
+    const saz = se.sunAz * D2R, sel = se.sunEl * D2R;
+    const sizeM = sizeKm * 1000, pm = sizeM / n;
+    const h = new Float32Array(n * n);
+    const craters: [number, number, number, number][] = [];
+    for (let i = 0; i < 28; i++) craters.push([(hash(i + 3) - 0.5) * sizeM, (hash(i + 90) - 0.5) * sizeM, sizeM * (0.02 + 0.09 * hash(i + 200) ** 2), 0.12 + 0.12 * hash(i + 300)]);
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      const x = -sizeM / 2 + (j + 0.5) * pm, y = sizeM / 2 - (i + 0.5) * pm;
+      let z = 0;
+      for (const [cx, cy, r, d] of craters) {
+        const q = Math.hypot(x - cx, y - cy) / r;
+        z += q < 1 ? -d * r * (1 - q * q) : d * r * 0.5 * Math.exp(-((q - 1) ** 2) * 6);
+      }
+      h[i * n + j] = z;
+    }
+    const dx = Math.sin(saz), dy = Math.cos(saz), tanE = Math.tan(Math.max(sel, 0.001));
+    const data = new Uint8Array(n * n * 2);
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      let lit = sel > 0 ? 1 : 0;
+      const h0 = h[i * n + j];
+      for (let s = 1; s < 60 && lit; s++) {
+        const ds = s * pm * 2, jj = Math.round(j + (dx * ds) / pm), ii = Math.round(i - (dy * ds) / pm);
+        if (jj < 0 || jj >= n || ii < 0 || ii >= n) break;
+        if (h[ii * n + jj] - h0 > ds * tanE) lit = 0;
+      }
+      const gx = (h[i * n + Math.min(n - 1, j + 1)] - h[i * n + Math.max(0, j - 1)]) / (2 * pm);
+      const gy = (h[Math.max(0, i - 1) * n + j] - h[Math.min(n - 1, i + 1) * n + j]) / (2 * pm);
+      const nz = 1 / Math.hypot(gx, gy, 1);
+      const shade = Math.max(0, (-gx * dx * Math.cos(sel) - gy * dy * Math.cos(sel) + Math.sin(sel)) * nz);
+      data[2 * (i * n + j)] = lit * 255;
+      data[2 * (i * n + j) + 1] = Math.min(255, shade * 255);
+    }
+    return { lat, lon, sizeKm, px: n, data, mock: true };
   }
 
   async sampleHeights(_w: number, _s: number, _e: number, _n: number, w: number, h: number): Promise<Float32Array> {

@@ -139,6 +139,14 @@ export interface SunEarth {
   earthVecMe: [number, number, number];
 }
 
+/** Terrain-true shadow raster (CONTRACTS section 7): 2 bytes per pixel, [sunFrac*255, shading*255]. */
+export interface ShadowPatch {
+  lat: number; lon: number; sizeKm: number; px: number;
+  data: Uint8Array;
+  /** true when synthetic (wasm engine without shadowPatch) */
+  mock?: boolean;
+}
+
 export interface InitInfo {
   threads: number;
   crossOriginIsolated: boolean;
@@ -167,6 +175,8 @@ export interface EngineApi {
   sampleHeights(west: number, south: number, east: number, north: number, w: number, h: number): Promise<Float32Array>;
   sunEarthAt(lat: number, lon: number, t: number): Promise<SunEarth>;
   faults(): Promise<GeoJSON.FeatureCollection>;
+  /** Terrain-true shadows around (lat, lon). Mock patch when the wasm engine lacks shadowPatch. */
+  shadowPatch(lat: number, lon: number, sizeKm: number, px: number, t: number): Promise<ShadowPatch>;
 }
 
 export const MOON_R_M = 1737400;

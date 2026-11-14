@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { VisResult } from '../engine/api.ts';
 import { getEngine } from '../engine/client.ts';
 import { fmtMetric, metricLabel } from '../query/metrics.ts';
-import { MAX_COMPARE, flyTo, select, toggleCompare, useStore, windowOf, type LeftTab, type Target } from '../store.ts';
+import { MAX_COMPARE, flyTo, select, setLayerState, toggleCompare, useStore, windowOf, type LeftTab, type Target } from '../store.ts';
+import { DiffTab } from './DiffTab.tsx';
+import { ReplayTab } from './ReplayTab.tsx';
 import { Badge, Why } from './ui.tsx';
 
 export const COLORS = { sun: '#F5B700', earth: '#4FA3FF', both: '#FFFFFF', eclipse: '#FF4FD8' };
@@ -165,10 +167,12 @@ function SitesTab() {
 
 function LayersTab() {
   const layers = useStore((s) => s.layers);
+  const defs = useStore((s) => s.layerDefs);
+  const lstate = useStore((s) => s.layerState);
   const set = (p: Partial<typeof layers>) => useStore.setState({ layers: { ...layers, ...p } });
-  const Toggle = ({ k, label, hint, disabled }: { k: 'sites' | 'results' | 'faults' | 'psr' | 'keepout'; label: string; hint?: React.ReactNode; disabled?: boolean }) => (
-    <label className={`layer ${disabled ? 'disabled' : ''}`}>
-      <input type="checkbox" checked={layers[k]} disabled={disabled} onChange={(e) => set({ [k]: e.target.checked })} />
+  const Toggle = ({ k, label, hint }: { k: 'sites' | 'results' | 'faults' | 'keepout' | 'shadows'; label: string; hint?: React.ReactNode }) => (
+    <label className="layer">
+      <input type="checkbox" checked={layers[k]} onChange={(e) => set({ [k]: e.target.checked })} />
       <span>{label}{hint}</span>
     </label>
   );
@@ -176,14 +180,40 @@ function LayersTab() {
     <div className="tab-body">
       <Toggle k="sites" label="Curated sites" />
       <Toggle k="results" label="Ranked results" />
-      <Toggle k="faults" label="Fault scarps" hint={<Why id="scarps" />} />
-      <Toggle k="psr" label={'Never-sunlit cells (PSR proxy) — coming soon'} disabled />
+      <Toggle k="faults" label="Fault scarps" hint={<Why id="lobate-scarps" />} />
+      <Toggle k="shadows" label="Terrain-true shadows (LOLA)" hint={<Why id="shadows" />} />
       <Toggle k="keepout" label="Keep-out circles around landers" />
       <div className="slider">
         <label>Radius <b>{layers.keepoutKm} km</b>
           <input type="range" min={0.5} max={50} step={0.5} value={layers.keepoutKm} onChange={(e) => set({ keepoutKm: parseFloat(e.target.value) })} />
         </label>
       </div>
+      <h4 className="subhead">Context layers</h4>
+      {defs.length === 0 && <p className="hint">No layer tiles found in /data/layers yet.</p>}
+      {defs.map((d) => {
+        const st = lstate[d.id] ?? { on: false, opacity: 1 };
+        const stops = d.legend.stops;
+        const span = d.legend.max - d.legend.min || 1;
+        const grad = stops.length > 1
+          ? `linear-gradient(90deg, ${stops.map(([v, c]) => `${c} ${Math.max(0, Math.min(100, ((v - d.legend.min) / span) * 100))}%`).join(', ')})`
+          : stops[0]?.[1] ?? '#22d3ee';
+        return (
+          <div key={d.id} className="lcard">
+            <label className="layer">
+              <input type="checkbox" checked={st.on} onChange={(e) => setLayerState(d.id, { on: e.target.checked })} />
+              <span>{d.title}{d.id === 'psr' && <Why id="psr" />}</span>
+            </label>
+            {st.on && (
+              <>
+                <div className="legendbar" style={{ background: grad }} />
+                <div className="legendlbl"><span>{d.legend.min}{d.units && d.units !== 'mask' ? ` ${d.units}` : ''}</span><span>{d.units === 'mask' ? 'mask' : d.legend.max}</span></div>
+                <label className="opac">opacity<input type="range" min={0.1} max={1} step={0.05} value={st.opacity} onChange={(e) => setLayerState(d.id, { opacity: parseFloat(e.target.value) })} /></label>
+                <small className="hint" title={d.citation}>{d.source}</small>
+              </>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -191,7 +221,7 @@ function LayersTab() {
 export function LeftPanel() {
   const tab = useStore((s) => s.leftTab);
   const nCmp = useStore((s) => s.compare.length);
-  const tabs: [LeftTab, string][] = [['results', 'Results'], ['sites', 'Sites'], ['layers', 'Layers']];
+  const tabs: [LeftTab, string][] = [['results', 'Results'], ['sites', 'Sites'], ['layers', 'Layers'], ['replay', 'Replay'], ['diff', 'Diff']];
   return (
     <aside className="left">
       <div className="tabs" role="tablist">
@@ -204,6 +234,8 @@ export function LeftPanel() {
       {tab === 'results' && <ResultsTab />}
       {tab === 'sites' && <SitesTab />}
       {tab === 'layers' && <LayersTab />}
+      {tab === 'replay' && <ReplayTab />}
+      {tab === 'diff' && <DiffTab />}
     </aside>
   );
 }

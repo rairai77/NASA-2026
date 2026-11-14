@@ -1,21 +1,16 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useStore } from '../store.ts';
+import { ALIASES, TIPS } from '../lib/educatorText.ts';
 
-export const WHY: Record<string, string> = {
-  pole: 'Near the poles the Sun never climbs more than ~1.5° above the horizon. It skims along the skyline, so a ridge a few kilometres away can hide it for days, and the same spot can be in sunlight a few hundred metres away.',
-  libration: 'Earth does not hang still in the lunar sky: the Moon’s tilt and slightly oval orbit make Earth wobble by about ±7° over 27.3 days (libration). Near the limb that wobble moves Earth above or below the horizon.',
-  charging: 'Close to the day/night boundary the Sun is low and the ground can charge up unevenly, lofting electrically charged dust. Landers and rovers need to plan for stronger surface charging there.',
-  scarps: 'Lobate scarps are cliffs formed as the Moon’s interior cooled and shrank. They are geologically young, and can still produce moonquakes, so we keep landing sites away from them.',
-  horizon: 'The skyline is built from terrain heights measured by the LOLA laser altimeter. Anything the Sun or Earth sits behind is in shadow or out of line of sight.',
-  eclipse: 'An eclipse here means Earth passes in front of the Sun as seen from the surface (a lunar solar eclipse).',
-};
+export const WHY = TIPS;
 
-export function Why({ id }: { id: keyof typeof WHY }) {
+export function Why({ id }: { id: string }) {
   const educator = useStore((s) => s.educator);
-  if (!educator) return null;
+  const key = ALIASES[id] ?? id;
+  if (!educator || !WHY[key]) return null;
   return (
-    <span className="why" tabIndex={0} aria-label={`Why? ${WHY[id]}`}>
-      ?<span className="why-tip" role="tooltip">{WHY[id]}</span>
+    <span className="why" tabIndex={0} aria-label={`Why? ${WHY[key]}`}>
+      ?<span className="why-tip" role="tooltip">{WHY[key]}</span>
     </span>
   );
 }
