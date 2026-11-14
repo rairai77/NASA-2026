@@ -1,0 +1,110 @@
+[
+ {
+  "id": "im1",
+  "name": "IM-1 Odysseus",
+  "lat": -80.1276,
+  "lon": 1.4367,
+  "coord_source": "LROC (Wagner et al. 2017 / LROC anthropogenic-objects shapefile) https://data.lroc.im-ldi.com/lroc/view_rdr/SHAPEFILE_ANTHROPOGENIC_OBJECTS",
+  "landed_utc": "2024-02-22T23:23:53Z",
+  "end_utc": "2024-02-29T17:00:00Z",
+  "end_kind": "sunset",
+  "end_reason": "Local sunset at the south-polar site; lander tipped on a 12-degree slope, one solar panel lit; not designed to survive lunar night",
+  "reported_note": "Intuitive Machines sent lunar-night configuration commands at about noon US Eastern on 2024-02-29 (~17:00 UTC; approximate) as the Sun fell out of view of the one illuminated solar panel; power depleted shortly after. Lander was in final hours on 02-28. The Sun set about a week after landing (7 days). Wake attempts from 2024-03-20 failed; declared over 2024-03-23.",
+  "sources": [
+   "https://lroc.im-ldi.com/images/1360",
+   "https://www.nasa.gov/missions/lro/nasas-lro-images-intuitive-machines-odysseus-lander/",
+   "https://en.wikipedia.org/wiki/IM-1",
+   "https://cosmiclog.com/2024/02/28/odysseus-will-nap-after-sending-moon-landing-snapshots/",
+   "https://www.universetoday.com/articles/lunar-night-permanently-ends-the-odysseus-mission"
+  ]
+ },
+ {
+  "id": "chandrayaan3",
+  "name": "Chandrayaan-3 (Vikram / Pragyan)",
+  "lat": -69.374,
+  "lon": 32.3187,
+  "coord_source": "LROC (Wagner et al. 2017 / LROC anthropogenic-objects shapefile) https://data.lroc.im-ldi.com/lroc/view_rdr/SHAPEFILE_ANTHROPOGENIC_OBJECTS",
+  "landed_utc": "2023-08-23T12:33:00Z",
+  "end_utc": "2023-09-04T02:30:00Z",
+  "end_kind": "sleep_before_night",
+  "end_reason": "Lander put into sleep mode around 08:00 IST on 2023-09-04 as local sunset approached (electronics not rated for -120 C night); rover parked 2023-09-02",
+  "reported_note": "Landing 18:03-18:04 IST (12:33-12:34 UTC; sources differ by a minute). Pragyan rover set to sleep 2023-09-02; Vikram lander ~08:00 IST (02:30 UTC) 2023-09-04, about 12 days after landing, 'when darkness fell'. ISRO hoped to wake them 2023-09-22 at next sunrise; no response by 2023-09-28. Exact local sunset time not published; end_utc is the sleep command time.",
+  "sources": [
+   "https://spacepolicyonline.com/news/india-says-good-night-to-chandrayaan-3/",
+   "https://en.wikipedia.org/wiki/Chandrayaan-3",
+   "https://data.lroc.im-ldi.com/lroc/view_rdr/SHAPEFILE_ANTHROPOGENIC_OBJECTS"
+  ]
+ },
+ {
+  "id": "slim",
+  "name": "SLIM",
+  "lat": -13.316,
+  "lon": 25.251,
+  "coord_source": "LROC (Wagner et al. 2017 / LROC anthropogenic-objects shapefile) https://data.lroc.im-ldi.com/lroc/view_rdr/SHAPEFILE_ANTHROPOGENIC_OBJECTS",
+  "landed_utc": "2024-01-19T15:20:00Z",
+  "end_utc": "2024-01-19T17:57:00Z",
+  "end_kind": "anomaly",
+  "end_reason": "Landed in an attitude where solar cells faced west and generated no power; battery shut down by ground command ~2.6 h after landing to avoid over-discharge",
+  "reported_note": "First end of operations (JAXA: shutdown 02:57 JST 2024-01-20 = 17:57 UTC 01-19). Contact regained ~2024-01-28 (JST) when sunlight reached the west-facing cells; SLIM then survived three lunar nights (woke 2024-02-25, 2024-03-27, 2024-04-23), last contact 2024-04-28/29, attempts ended 2024-08-26 as the Sun set at the site. Designed for one lunar day only. Replay should use the initial anomaly or the late-April final sunset (last_contact_utc).",
+  "last_contact_utc": "2024-04-29T00:00:00Z",
+  "sources": [
+   "https://global.jaxa.jp/press/2024/01/20240120-1_e.html",
+   "https://global.jaxa.jp/press/2024/01/20240125-1_e.html",
+   "https://spacepolicyonline.com/news/farewell-slim",
+   "https://en.wikipedia.org/wiki/Smart_Lander_for_Investigating_Moon",
+   "https://data.lroc.im-ldi.com/lroc/view_rdr/SHAPEFILE_ANTHROPOGENIC_OBJECTS"
+  ]
+ },
+ {
+  "id": "blue_ghost1",
+  "name": "Blue Ghost Mission 1",
+  "lat": 18.5622,
+  "lon": 61.8102,
+  "coord_source": "LROC (Wagner et al. 2017 / LROC anthropogenic-objects shapefile) https://data.lroc.im-ldi.com/lroc/view_rdr/SHAPEFILE_ANTHROPOGENIC_OBJECTS",
+  "landed_utc": "2025-03-02T08:34:00Z",
+  "end_utc": "2025-03-16T23:15:00Z",
+  "end_kind": "sunset",
+  "end_reason": "Lunar sunset on 2025-03-16; solar-powered lander operated about 5 hours into the lunar night until batteries depleted",
+  "reported_note": "Firefly: just over 5 h of operation after lunar sunset; final data received ~6:15 pm CDT 2025-03-16 (= 23:15 UTC; Wikipedia states 23:25 UTC). Sunset therefore ~18:15 UTC (derived, not stated by Firefly; NASA only says March 16). 346 h of daylight, >14 days on surface. Landing time 08:34 UTC per Wikipedia (3:34 am CST).",
+  "sources": [
+   "https://fireflyspace.com/news/firefly-aerospace-successfully-completes-14-days-of-surface-operations-on-the-moon",
+   "https://www.nasa.gov/news-release/nasa-firefly-invite-media-to-discuss-end-of-blue-ghost-moon-mission",
+   "https://en.wikipedia.org/wiki/Blue_Ghost_Mission_1",
+   "https://lroc.im-ldi.com/images/1407"
+  ]
+ },
+ {
+  "id": "im2",
+  "name": "IM-2 Athena",
+  "lat": -84.7906,
+  "lon": 29.1957,
+  "coord_source": "LROC (Wagner et al. 2017 / LROC anthropogenic-objects shapefile) https://data.lroc.im-ldi.com/lroc/view_rdr/SHAPEFILE_ANTHROPOGENIC_OBJECTS",
+  "landed_utc": "2025-03-06T17:28:50Z",
+  "end_utc": "2025-03-07T06:15:00Z",
+  "end_kind": "anomaly",
+  "end_reason": "Lander came to rest on its side in a shadowed crater; solar arrays could not generate enough power and batteries were depleted <13 h after landing",
+  "reported_note": "Not a sunset end: Athena tipped over, ~250 m from the target, in a shadowed crater (about -173 C); power 'fully depleted', last contact 06:15 UTC 2025-03-07 (1:15 am EST per NASA). Landing time 17:28:50 UTC per Wikipedia infobox (collectSPACE: ~12:30 pm EST); sources differ by about a minute. Sunset time not stated.",
+  "sources": [
+   "https://en.wikipedia.org/wiki/IM-2",
+   "https://www.collectspace.com/news/news-030625a-intuitivie-machines-im2-athena-moon-landing.html",
+   "https://lroc.im-ldi.com/images/1409",
+   "https://data.lroc.im-ldi.com/lroc/view_rdr/SHAPEFILE_ANTHROPOGENIC_OBJECTS"
+  ]
+ },
+ {
+  "id": "hakutor_m2",
+  "name": "HAKUTO-R Mission 2 (Resilience)",
+  "lat": 60.4445,
+  "lon": -4.588,
+  "coord_source": "LROC (Wagner et al. 2017 / LROC anthropogenic-objects shapefile) https://data.lroc.im-ldi.com/lroc/view_rdr/SHAPEFILE_ANTHROPOGENIC_OBJECTS",
+  "landed_utc": "2025-06-05T19:17:00Z",
+  "end_utc": "2025-06-05T19:17:00Z",
+  "end_kind": "anomaly",
+  "end_reason": "Crashed (hard landing) during landing attempt; no surface operations",
+  "reported_note": "Landing attempt 2025-06-05 19:17 UTC; telemetry showed fast descent and contact was lost shortly before touchdown. Coordinates are the LROC-identified impact crater. Not usable for sunset validation; listed for completeness.",
+  "sources": [
+   "https://www.nasaspaceflight.com/2025/06/hakuto-r-m2-landing/",
+   "https://data.lroc.im-ldi.com/lroc/view_rdr/SHAPEFILE_ANTHROPOGENIC_OBJECTS"
+  ]
+ }
+]

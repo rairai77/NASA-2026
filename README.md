@@ -11,20 +11,17 @@ One Cloudflare Worker (`worker/`, config in `wrangler.toml`) serves the built we
 (`web/dist/`) as static assets and handles `POST /api/parse` (natural-language query
 parsing via OpenRouter) and `GET /api/health`.
 
-**Data** (`web/public/data/`, ~1 GB) is not in git. It is published as assets of the GitHub
-release tagged `data-latest`:
-
-```sh
-scripts/package-data.sh            # tar + split into dist-data/ (dry run)
-scripts/package-data.sh --upload   # same, then gh release create/upload data-latest
-scripts/fetch-data.sh              # download, reassemble, extract into web/public/data/
-```
+**Data** (`web/public/data/`, ~1 GB) is not in git and is generated in CI by
+`pipeline/run_all.sh` (idempotent; skips steps whose outputs exist). The deploy workflow caches
+`pipeline/raw/` (keyed on `pipeline/fetch.py`) and `web/public/data/` (keyed on the pipeline,
+engine and `data-src/` sources), so only the first run, or a run after those sources change,
+is slow. The release-based scripts `scripts/package-data.sh` and `scripts/fetch-data.sh`
+(tarball parts on a `data-latest` release) remain in the repo but CI does not use them.
 
 **Build:** `scripts/build.sh` (wasm-pack build of `engine/`, then `npm ci && npm run build`
 in `web/`; `SKIP_WASM=1` skips the wasm step).
 
-**CI:** `.github/workflows/deploy.yml` runs on push to `main` (and manually): fetch data,
-build, deploy with `cloudflare/wrangler-action`. Required repo secrets: `CLOUDFLARE_API_TOKEN`
+**CI:** `.github/workflows/deploy.yml` runs on push to `main` (and manually): run the data pipeline (cached), build, deploy with `cloudflare/wrangler-action`. Required repo secrets: `CLOUDFLARE_API_TOKEN`
 (Workers edit permission), `CLOUDFLARE_ACCOUNT_ID`, `OPENROUTER_API_KEY`. Without
 `CLOUDFLARE_API_TOKEN` the deploy step is skipped with a notice. `pr-build.yml` builds
 without data on pull requests.

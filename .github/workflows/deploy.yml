@@ -15,7 +15,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -34,16 +34,49 @@ jobs:
         with:
           tool: wasm-pack
 
+      - name: Install uv and Python 3.13
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Fetch processed data (release data-latest)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: scripts/fetch-data.sh
+      - name: Restore raw downloads cache
+        id: raw-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: pipeline/raw
+          key: raw-${{ hashFiles('pipeline/fetch.py') }}
+
+      - name: Restore generated data cache
+        id: data-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: web/public/data
+          key: data-${{ hashFiles('pipeline/**/*.py', 'pipeline/pyproject.toml', 'pipeline/uv.lock', 'engine/src/**', 'engine/Cargo.toml', 'data-src/**') }}
+
+      - name: Generate data (pipeline)
+        id: pipeline
+        run: pipeline/run_all.sh
+
+      # Save right after the pipeline so a failed build/deploy does not lose an expensive run.
+      - name: Save raw downloads cache
+        if: always() && steps.raw-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: pipeline/raw
+          key: raw-${{ hashFiles('pipeline/fetch.py') }}
+
+      - name: Save generated data cache
+        if: always() && steps.pipeline.outcome == 'success' && steps.data-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: web/public/data
+          key: data-${{ hashFiles('pipeline/**/*.py', 'pipeline/pyproject.toml', 'pipeline/uv.lock', 'engine/src/**', 'engine/Cargo.toml', 'data-src/**') }}
 
       - name: Generate site list for the Worker prompt
         run: node scripts/gen-sites.mjs
