@@ -22,7 +22,7 @@
   .tb-back svg { width: 18px; height: 18px; }
   .ask { max-width: none; height: 40px; }
   .ask .qtext { font-size: 16px; }
-  .qstrip { flex: none; height: 44px; padding: 0 10px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+  .qstrip { flex: none; height: 44px; padding: 0 10px; overflow-x: auto; overflow-y: hidden; overscroll-behavior: contain; touch-action: pan-x; scrollbar-width: none; }
   .qstrip::-webkit-scrollbar { display: none; }
   .chips { flex-wrap: nowrap; width: max-content; }
   .chip, .qs-word { flex: none; }
@@ -38,7 +38,7 @@
   .sheet-tabs { flex: none; position: relative; z-index: 20; background: var(--surface-0); border-top: 1px solid var(--border); padding-bottom: env(safe-area-inset-bottom); }
   .sheet-tabs .ui-tabs { padding: 0; border-bottom: 0; }
   .sheet-tabs .ui-tabs button { flex: 1; justify-content: center; height: 48px; }
-  .sheet-tabs .ui-tabs button.on::after { bottom: auto; top: -1px; left: 20%; right: 20%; }
+  .sheet-tabs .ui-tabs button.on::after { bottom: auto; top: 0; left: 20%; right: 20%; }
   .site-sheet { position: absolute; inset: 0 0 calc(49px + env(safe-area-inset-bottom)) 0; z-index: 35; display: flex; background: var(--surface-0); }
   .site-sheet > .drawer { flex: 1; width: 100%; max-width: none; border: 0; }
   .is-phone .fp-layer { position: fixed; inset: 0; z-index: 80; }

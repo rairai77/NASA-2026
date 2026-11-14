@@ -10,7 +10,7 @@ const TARGETS: Record<string, { sel: string[]; phone?: 'results' | 'site' | 'tim
   pole: { sel: ['[data-tour="sky"]', '[data-tour="inspector"]', '.drawer'], phone: 'site' },
   scrub: { sel: ['[data-tour="timeline"]', '.timeline'], phone: 'timeline' },
   ask: { sel: ['[data-tour="ask"]', '.ask'] },
-  stand: { sel: ['[data-tour="stand"]', '[data-tour="inspector"]', '.drawer'], phone: 'site' },
+  stand: { sel: ['[data-tour="how"]', '[data-tour="stand"]', '[data-tour="inspector"]', '.drawer'], phone: 'site' },
 };
 
 function findTarget(act: string): HTMLElement | null {
@@ -29,7 +29,7 @@ export function Tour() {
     if (step === null) return;
     const s = useStore.getState();
     const act = TOUR[step].action;
-    useStore.setState({ playing: false, fpOpen: false });
+    useStore.setState({ playing: false, fpOpen: false, leftCollapsed: false, rightCollapsed: false, timelineCollapsed: false, ...(act === 'apollo' || act === 'pole' ? { inspectorTab: 'sky' as const } : {}) });
     const pick = (ids: string[]) => ids.find((i) => s.targets[i]);
     if (act === 'apollo') { const id = pick(['apollo11']); if (id) { select(id); flyTo(id); } }
     if (act === 'pole') { const id = pick(['art3_malapert_massif', 'art3_haworth', 'art3_slater_plain']) ?? s.results?.results[0]?.id; if (id) { select(id); flyTo(id); } }

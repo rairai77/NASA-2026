@@ -8,7 +8,7 @@ import { describeRegion, regionIsCoarse } from '../query/query.ts';
 import { metricLabel, fmtMetric, METRIC_BY_NAME } from '../query/metrics.ts';
 import { applyNasaScreening, parseText, patchQuery, setPanel, useStore } from '../store.ts';
 import { FilterEditor, ObjectiveEditor, RegionEditor, WindowEditor, newFilter, newObjective } from './editors.tsx';
-import { Button, IconButton, NumInput, Popover, Spinner, useEscape, type IconType } from './ui.tsx';
+import { Button, IconButton, NumInput, Popover, Spinner, useEscape, useWheelHScroll, type IconType } from './ui.tsx';
 import { PanelFields, panelSummary } from './PowerPanel.tsx';
 
 export interface Example { label: string; sub: string; text: string; icon: IconType }
@@ -157,7 +157,9 @@ export function Chips() {
 }
 
 export function QueryStrip() {
-  return <div className="qstrip"><Chips /></div>;
+  const ref = useRef<HTMLDivElement>(null);
+  useWheelHScroll(ref);
+  return <div className="qstrip" ref={ref}><Chips /></div>;
 }
 
 /** The hero control: natural-language question with examples on focus. */

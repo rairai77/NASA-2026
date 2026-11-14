@@ -45,12 +45,20 @@ export function DiffTab() {
   return (
     <div className="pn-body">
       <div className="pn-head">
-        <h2 className="pn-h">Scenarios</h2>
-        <p className="pn-sub">Save the current query, window and selected site as A or B, then compare.</p>
+        <h2 className="pn-h">Compare dates</h2>
+        <p className="pn-sub">Save the current date window as A, change the dates (e.g. a launch slip), save as B, and see what changes for this site.</p>
       </div>
+      {!A && !B && (
+        <ol className="pn-steps" aria-label="How it works">
+          <li>Pick a site and save the current dates as <b>A</b>.</li>
+          <li>Change the dates in the query bar, or use {'“'}What if the launch slips?{'”'} below.</li>
+          <li>Save them as <b>B</b>. The biggest changes appear here.</li>
+        </ol>
+      )}
       <div className="pn-slots"><Slot label="A" s={A} /><Slot label="B" s={B} /></div>
       <section className="pn-slip">
         <h3 className="ui-section-title">What if the launch slips?</h3>
+        <p className="pn-hint">Shortcut: saves the current dates as A, shifts them, and saves B for you.</p>
         <div className="pn-slip-row">
           <span>Slip by</span>
           <input className="num" type="number" min={-52} max={52} value={weeks} onChange={(e) => setWeeks(parseInt(e.target.value) || 0)} aria-label="weeks" />

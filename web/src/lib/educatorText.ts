@@ -19,8 +19,8 @@ export const ALIASES: Record<string, string> = { pole: 'why-pole-hard', charging
 
 export interface TourStep { title: string; text: string; action: 'apollo' | 'pole' | 'scrub' | 'ask' | 'stand' }
 export const TOUR: TourStep[] = [
-  { title: '1. Meet the Moon', action: 'apollo', text: 'At Apollo 11 the Sun gets high overhead and a day lasts about two weeks. Look at the horizon plot: the Sun track sweeps high above a flat skyline.' },
-  { title: '2. Go to the pole', action: 'pole', text: 'Here the Sun only skims the horizon. The skyline cuts into the Sun track. (Click the ? next to “Skyline” to see why the pole is hard.)' },
+  { title: '1. Meet the Moon', action: 'apollo', text: 'At Apollo 11 the Sun gets high overhead and a day lasts about two weeks. Look at the horizon plot in the Sky tab: the Sun track sweeps high above a flat skyline.' },
+  { title: '2. Go to the pole', action: 'pole', text: 'Here the Sun only skims the horizon. The grey skyline cuts into the Sun track, so the Sun is often hidden behind mountains and crater rims.' },
   { title: '3. Scrub time', action: 'scrub', text: 'Drag the time cursor along the timeline. Watch the Sun and Earth move on the plot and the countdown to sunrise or sunset change. The bands show when the Sun, Earth, or both are up.' },
   { title: '4. Ask a question', action: 'ask', text: 'Type a request such as “best sites for a week in June 2028”. Chips appear; edit one and the ranked sites update. No AI picks the winner; the chips are the contract.' },
   { title: '5. Stand there, and check the work', action: 'stand', text: 'We have opened the first-person view (the “Stand here” button in the site panel does this any time): it shows the skyline from 2 m above the ground. Then open “How we know it’s right” and read the limits: Earth line of sight rather than a link budget, and not an official NASA product.' },

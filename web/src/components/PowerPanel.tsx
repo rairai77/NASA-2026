@@ -6,6 +6,7 @@ import { getEngine } from '../engine/client.ts';
 import { fmtDur, HOUR } from '../lib/time.ts';
 import { patchQuery, seriesStep, setPanel, useStore, windowOf, type Target } from '../store.ts';
 import { Check, ChevronDown, ChevronRight, CircleCheck, CircleX, Settings2, Zap } from 'lucide-react';
+import { palette, useTheme } from '../lib/theme.ts';
 import { Button, NumInput, Stat } from './ui.tsx';
 
 export const PANEL_KINDS: [PanelKind, string][] = [
@@ -105,7 +106,7 @@ export function PowerPanel({ target }: { target: Target }) {
       )}
       <section className="pn-fold">
         <button className="pn-fold-h" onClick={() => setOpen(!open)} aria-expanded={open}>
-          {open ? <ChevronDown aria-hidden /> : <ChevronRight aria-hidden />}<Settings2 aria-hidden /><span>Panel settings</span><small>{panelSummary(panel)}</small>
+          <Settings2 aria-hidden /><span className="pn-fold-t"><b>Panel settings</b><small>{panelSummary(panel)}</small></span>{open ? <ChevronDown aria-hidden className="pn-fold-chev" /> : <ChevronRight aria-hidden className="pn-fold-chev" />}
         </button>
         {open && <div className="pn-fold-b"><PanelFields panel={panel} onChange={setPanel} /></div>}
       </section>
@@ -121,6 +122,7 @@ export function PowerPanel({ target }: { target: Target }) {
 function PowerSpark({ res, win, cursor, panel }: { res: PowerResult; win: [number, number]; cursor: number; panel: Panel }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const W = 340, H = 56;
+  const theme = useTheme();
   useEffect(() => {
     const c = ref.current;
     if (!c) return;
@@ -128,7 +130,8 @@ function PowerSpark({ res, win, cursor, panel }: { res: PowerResult; win: [numbe
     c.width = W * dpr; c.height = H * dpr;
     const g = c.getContext('2d')!;
     g.scale(dpr, dpr);
-    g.fillStyle = 'rgba(255,255,255,0.04)'; g.fillRect(0, 0, W, H);
+    const P = palette();
+    g.fillStyle = P.laneBg; g.fillRect(0, 0, W, H);
     const n = res.powerW.length;
     if (n < 2) return;
     let max = 1;
@@ -136,24 +139,25 @@ function PowerSpark({ res, win, cursor, panel }: { res: PowerResult; win: [numbe
     max = Math.max(max, panel.loadW);
     const x = (t: number) => ((t - win[0]) / (win[1] - win[0])) * W;
     // dark stretches (no power) tinted
-    g.fillStyle = 'rgba(0,0,0,0.4)';
+    g.fillStyle = theme === 'dark' ? '#000' : P.text; g.globalAlpha = theme === 'dark' ? 0.4 : 0.1;
     let run = -1;
     for (let i = 0; i <= n; i++) {
       const dark = i < n && res.powerW[i] <= 0;
       if (dark && run < 0) run = i;
       if (!dark && run >= 0) { g.fillRect(x(res.t[run]), 0, Math.max(1, x(res.t[Math.min(i, n - 1)]) - x(res.t[run])), H); run = -1; }
     }
+    g.globalAlpha = 1;
     // power curve, max-per-pixel envelope
-    g.fillStyle = '#F5B700';
+    g.fillStyle = P.sun;
     const colMax = new Float32Array(W);
     for (let i = 0; i < n; i++) { const c0 = Math.min(W - 1, Math.max(0, Math.floor(x(res.t[i])))); if (res.powerW[i] > colMax[c0]) colMax[c0] = res.powerW[i]; }
     for (let c0 = 0; c0 < W; c0++) { const h = (colMax[c0] / max) * (H - 6); if (h > 0) g.fillRect(c0, H - 2 - h, 1, h); }
     // load line
-    g.strokeStyle = '#f87171'; g.lineWidth = 1.2; g.setLineDash([3, 3]);
+    g.strokeStyle = P.danger; g.lineWidth = 1.2; g.setLineDash([3, 3]);
     const ly = H - 2 - (panel.loadW / max) * (H - 6);
     g.beginPath(); g.moveTo(0, ly); g.lineTo(W, ly); g.stroke(); g.setLineDash([]);
-    if (cursor >= win[0] && cursor <= win[1]) { g.strokeStyle = '#fff'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(x(cursor) + 0.5, 0); g.lineTo(x(cursor) + 0.5, H); g.stroke(); }
-  }, [res, win, cursor, panel.loadW]);
+    if (cursor >= win[0] && cursor <= win[1]) { g.strokeStyle = P.cursor; g.lineWidth = 1.5; g.beginPath(); g.moveTo(x(cursor) + 0.5, 0); g.lineTo(x(cursor) + 0.5, H); g.stroke(); }
+  }, [res, win, cursor, panel.loadW, theme]);
   let peak = 0;
   for (let i = 0; i < Math.min(res.powerW.length, 20000); i++) if (res.powerW[i] > peak) peak = res.powerW[i];
   return (

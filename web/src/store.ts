@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import type { CuratedSite, HorizonResult, InitInfo, Mission, Panel, PowerResult, Progress, Query, RankResult, Site, TraverseLimits, TraverseResult, VisResult } from './engine/api.ts';
 import { getEngine, rankWithProgress } from './engine/client.ts';
 import { DAY, clamp, parseWhen, toDay } from './lib/time.ts';
+import { readPref } from './lib/theme.ts';
 import { decodeState, type ShareState, type TargetStub } from './lib/share.ts';
 import { METRIC_BY_NAME } from './query/metrics.ts';
 import { DEFAULT_PANEL, addDays, defaultQuery, mergeQuery } from './query/query.ts';
@@ -74,6 +75,7 @@ interface State {
   parsing: boolean;
   results: RankResult | null;
   ranking: boolean;
+  rankSkipped: boolean;
   progress: Progress | null;
 
   selected: string | null;
@@ -87,10 +89,13 @@ interface State {
 
   layers: Layers;
   educator: boolean;
+  leftCollapsed: boolean; rightCollapsed: boolean; timelineCollapsed: boolean;
   leftTab: LeftTab;
   /** active tab of the site inspector */
   inspectorTab: InspectorTab;
   fpOpen: boolean;
+  /** true while the 3D first-person camera is live inside the globe (set by globe/firstPerson3d.ts; the shadow effect may read it) */
+  fpActive: boolean;
   validationOpen: boolean;
   builderOpen: boolean;
   toast: { msg: string; id: number } | null;
@@ -120,8 +125,20 @@ function window_(q: Query): [number, number] {
   return [parseWhen(q.window.start), parseWhen(q.window.end)];
 }
 
+/** Ephemeris coverage for the UI: windows outside 2023-01-01..2030-12-31 are never sent to the engine. */
+export const WINDOW_MIN = '2023-01-01', WINDOW_MAX = '2030-12-31';
+export function windowProblem(w: { start: string; end: string }): string | null {
+  const ok = (d: string) => /^\d{4}-\d{2}-\d{2}/.test(d) && Number.isFinite(Date.parse(d.length === 10 ? `${d}T00:00:00Z` : d));
+  if (!ok(w.start) || !ok(w.end)) return 'Enter complete dates';
+  const a = w.start.slice(0, 10), b = w.end.slice(0, 10);
+  if (a < WINDOW_MIN || a > WINDOW_MAX || b < WINDOW_MIN || b > WINDOW_MAX) return 'Dates must be between 2023 and 2030';
+  if (parseWhen(w.start) >= parseWhen(w.end)) return 'End must be after start';
+  return null;
+}
+
 const restored = decodeState(typeof location !== 'undefined' ? location.hash : '');
-const q0 = restored?.q ? mergeQuery(defaultQuery(today), restored.q) : defaultQuery(today);
+let q0 = restored?.q ? mergeQuery(defaultQuery(today), restored.q) : defaultQuery(today);
+if (windowProblem(q0.window)) q0 = { ...q0, window: defaultQuery(today).window };
 const [w0, w1] = window_(q0);
 
 function shouldShowWelcome(): boolean {
@@ -135,15 +152,17 @@ export const useStore = create<State>(() => ({
   panel: q0.power ?? { ...DEFAULT_PANEL },
   traverse: { goal: null, picking: false, limits: { ...DEFAULT_LIMITS }, busy: false, result: null, startId: null, error: null },
   info: null, sites: [], missions: [], curated: {}, targets: {},
-  query: q0, unparsed: [], warnings: [], parsing: false, results: null, ranking: false, progress: null,
+  query: q0, unparsed: [], warnings: [], parsing: false, results: null, ranking: false, rankSkipped: false, progress: null,
   selected: null, compare: [], data: {},
   cursor: clamp(restored?.t ?? w0 + (w1 - w0) * 0.1, w0, w1), playing: false, speed: 6 * 3600, view: [w0, w1],
   layers: { sites: true, results: true, faults: false, keepout: false, keepoutKm: 5, shadows: true },
   layerDefs: [], layerState: {}, exaggeration: 1, hoveredId: null, markers: [], replay: null, playUntil: null, scenA: null, scenB: null, pendingSlip: false, tourStep: null,
   welcomeOpen: shouldShowWelcome(), phoneTab: 'results',
-  educator: restored?.ed ?? false, leftTab: (restored?.tab as LeftTab) ?? 'results',
+  educator: false, // educator mode is parked (no UI entry point); restored links no longer turn it on
+  leftCollapsed: readPref('llsn.ui.left') === '1', rightCollapsed: readPref('llsn.ui.right') === '1', timelineCollapsed: readPref('llsn.ui.timeline') === '1',
+  leftTab: (restored?.tab as LeftTab) ?? 'results',
   inspectorTab: 'sky',
-  fpOpen: false, validationOpen: false, builderOpen: false, toast: null, ellipseDraw: null, fly: null,
+  fpOpen: false, fpActive: false, validationOpen: false, builderOpen: false, toast: null, ellipseDraw: null, fly: null,
   initialCam: restored?.cam ?? null,
 }));
 
@@ -183,8 +202,12 @@ export function setQuery(q: Query, rank = true) {
   if (!q.power && [...q.filters.map((f) => f.metric), ...q.objectives.map((o) => o.metric)].some((m) => METRIC_BY_NAME[m]?.needsPower)) {
     q = { ...q, power: { ...get().panel } };
   }
-  const [a, b] = window_(q);
   const prev = get().query;
+  if (windowProblem(q.window) && (q.window.start !== prev.window.start || q.window.end !== prev.window.end)) {
+    toast('Dates must be between 2023 and 2030; the window was left unchanged.');
+    q = { ...q, window: prev.window };
+  }
+  const [a, b] = window_(q);
   set((s) => ({ query: q, view: [a, b], cursor: clamp(s.cursor, a, b), ...(q.power && !prev.power ? { panel: q.power } : {}) }));
   if (!!prev.relay !== !!q.relay) setTimeout(refreshData, 0);
   if (rank) scheduleRank();
@@ -214,7 +237,10 @@ export async function runRank() {
   const q = get().query;
   // Mission replay of a window outside the polar index months: nothing to rank, show the mission site only.
   if (get().replay && outsideIndex(...window_(q))) { set({ ranking: false, progress: null }); return; }
-  set({ ranking: true, progress: { stage: 'Starting', done: 0, total: 1 } });
+  // The region index only covers 2026-2030: skip ranking (not an error); site timelines still work from 2023.
+  const [wa, wb] = window_(q);
+  if (wa < INDEX_RANGE[0] || wb > INDEX_RANGE[1]) { set({ ranking: false, progress: null, results: null, rankSkipped: true }); return; }
+  set({ ranking: true, rankSkipped: false, progress: { stage: 'Starting', done: 0, total: 1 } });
   try {
     const res = await rankWithProgress(q, (p) => { if (seq === rankSeq) set({ progress: p }); });
     if (seq !== rankSeq) return;

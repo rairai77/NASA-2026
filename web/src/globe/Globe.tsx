@@ -1,26 +1,28 @@
 import './cesiumSetup.ts';
 import { useEffect, useRef, useState } from 'react';
 import {
-  BillboardGraphics, BoundingSphere, Cartesian2, Cartesian3, Color, ConstantPositionProperty, CustomDataSource, DirectionalLight,
-  Ellipsoid, Entity, GeographicTilingScheme, HeadingPitchRange, HorizontalOrigin, Math as CMath, NearFarScalar,
+  BillboardGraphics, Cartesian2, Cartesian3, Color, ConstantPositionProperty, CustomDataSource, DirectionalLight,
+  Ellipsoid, Entity, GeographicTilingScheme, HorizontalOrigin, Math as CMath, NearFarScalar,
   ScreenSpaceEventHandler, ScreenSpaceEventType, SingleTileImageryProvider, UrlTemplateImageryProvider, VerticalOrigin, Viewer,
-  ImageryLayer, type ImageryProvider, Rectangle, Matrix4, HeightReference, ColorMaterialProperty, DistanceDisplayCondition, LabelStyle,
+  ImageryLayer, type ImageryProvider, Rectangle, HeightReference, ColorMaterialProperty, DistanceDisplayCondition, LabelStyle,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
-import { getEngine } from '../engine/client.ts';
+import { cancelShadow, getEngine, isShadowCached, requestShadow, type ShadowReq } from '../engine/client.ts';
+import { perfLog } from '../engine/perf.ts';
 import { flyTo, select, useStore } from '../store.ts';
+import { syncFirstPerson } from './firstPerson3d.ts'; // 3D first-person ("Stand here")
 import { createTerrainProvider } from './terrain.ts';
+import { getOrbitControls, installOrbitControls } from './orbitControls.ts';
 import { installTraverseLayer } from './traverseLayer.ts';
 import { ShadowImageryProvider } from './shadowProvider.ts';
-import type { ShadowPatch } from '../engine/api.ts';
+import { POLE_PLAN, computePlans, formatRes, needsReplan, type ShadowPlan } from './shadowPlan.ts';
 import { makeMoonCanvas } from './moonTexture.ts';
-import { Crosshair, House, Layers as LayersIcon, Mountain, Sun } from 'lucide-react';
+import { Crosshair, House, Layers as LayersIcon, Minus, Mountain, Plus, Rotate3d, Sun } from 'lucide-react';
 import { IconButton, Spinner, Tag } from '../components/ui.tsx';
 import { METRIC_BY_NAME } from '../query/metrics.ts';
 import { placeFor, shortName } from '../lib/places.ts';
 
 const MOON = Ellipsoid.MOON;
-const LOCAL_KM = 60;
 Ellipsoid.default = MOON;
 
 export const GROUP_COLORS: Record<string, string> = {
@@ -34,15 +36,9 @@ export function getCameraState() { return latestCam; }
 const r3 = (v: Cartesian3) => [v.x, v.y, v.z].map((x) => Math.round(x));
 const r4 = (v: Cartesian3) => [v.x, v.y, v.z].map((x) => Math.round(x * 1e5) / 1e5);
 
-// Default / "Pole view": an oblique look over the south pole (never exactly nadir, which degenerates Cesium's depth plane).
-// Range and pitch keep the camera above the 350 km "local" threshold so the 650 km regional shadow patch is used.
-const POLE_VIEW = { heading: CMath.toRadians(20), pitch: CMath.toRadians(-48), range: 5.2e5 };
-const poleTarget = () => Cartesian3.fromDegrees(0, -90, 0, MOON);
-function poleOffset() { return new HeadingPitchRange(POLE_VIEW.heading, POLE_VIEW.pitch, POLE_VIEW.range); }
-function setPoleView(viewer: Viewer) {
-  viewer.camera.lookAt(poleTarget(), poleOffset());
-  viewer.camera.lookAtTransform(Matrix4.IDENTITY);
-}
+// Default / "Pole view": top-down over the south pole (see orbitControls.home()); the view axis passes through the Moon's centre.
+// The altitude keeps the camera above the 350 km "local" threshold so the 650 km regional shadow patch is used.
+const TILT_ON_DEG = 50;
 const RELIEF_STEPS = [1, 2, 4];
 
 function pos(lat: number, lon: number, h = 0) { return Cartesian3.fromDegrees(lon, lat, h, MOON); }
@@ -123,9 +119,9 @@ export default function Globe() {
   const layerState = useStore((st) => st.layerState);
   const exaggeration = useStore((st) => st.exaggeration);
   const imgLayers = useRef<Record<string, ImageryLayer>>({});
-  const shadowLayer = useRef<ImageryLayer | null>(null);
   const [regime, setRegime] = useState<'regional' | 'local'>('regional');
   const [shadowMock, setShadowMock] = useState(false);
+  const [tilted, setTilted] = useState(false);
 
   // ---- create viewer once ----------------------------------------------------------
   useEffect(() => {
@@ -155,8 +151,6 @@ export default function Globe() {
     scene.backgroundColor = Color.BLACK;
     scene.highDynamicRange = false;
     scene.light = new DirectionalLight({ direction: new Cartesian3(-1, 0, 0) });
-    scene.screenSpaceCameraController.minimumZoomDistance = 300;
-    scene.screenSpaceCameraController.maximumZoomDistance = 4e7;
     viewer.clock.shouldAnimate = false;
     viewer.cesiumWidget.creditContainer.classList.add('tiny-credit');
 
@@ -205,14 +199,16 @@ export default function Globe() {
     const cam = useStore.getState().initialCam;
     if (cam) {
       viewer.camera.setView({ destination: new Cartesian3(cam.p[0] + 1, cam.p[1] + 1, cam.p[2]), orientation: { direction: new Cartesian3(...cam.d), up: new Cartesian3(...cam.u) } });
-    } else {
-      setPoleView(viewer);
     }
+    // Moon-centred orbit controls own all camera input; they adopt the restored camera, or start top-down over the pole.
+    const orbit = installOrbitControls(viewer);
+    if (!cam) orbit.home(true);
     viewer.camera.percentageChanged = 0.005;
     const updCam = () => {
       const c = viewer.camera;
       latestCam = { p: r3(c.positionWC), d: r4(c.directionWC), u: r4(c.upWC) };
       setRegime(c.positionCartographic.height < 3.5e5 ? 'local' : 'regional');
+      setTilted((getOrbitControls()?.getTilt() ?? 0) > 10);
     };
     viewer.camera.changed.addEventListener(updCam);
     updCam();
@@ -226,6 +222,7 @@ export default function Globe() {
     };
     let lastPick = 0, pendingMove: ReturnType<typeof setTimeout> | null = null;
     const onMove = (p: Cartesian2) => {
+      if (getOrbitControls()?.isInteracting()) return;
       const id = pickId(p);
       scene.canvas.style.cursor = id ? 'pointer' : '';
       setHover((h) => (id ? { id, x: p.x, y: p.y } : h ? null : h));
@@ -248,7 +245,7 @@ export default function Globe() {
     ro.observe(host);
     setReady(true);
     return () => {
-      ro.disconnect(); scene.canvas.removeEventListener('mouseleave', onLeave); if (pendingMove) clearTimeout(pendingMove); handler.destroy(); disposeTraverse(); viewer.destroy(); viewerRef.current = null; setReady(false);
+      ro.disconnect(); scene.canvas.removeEventListener('mouseleave', onLeave); if (pendingMove) clearTimeout(pendingMove); handler.destroy(); orbit.destroy(); disposeTraverse(); viewer.destroy(); viewerRef.current = null; setReady(false);
     };
   }, []);
 
@@ -393,7 +390,7 @@ export default function Globe() {
         position: pos(ellipse.lat, ellipse.lon), name: 'Landing ellipse',
         ellipse: { semiMajorAxis: a, semiMinorAxis: b, rotation: CMath.toRadians(rot), material: Color.fromCssColorString('#2EE6C5').withAlpha(0.4) },
       });
-      viewer.camera.flyToBoundingSphere(new BoundingSphere(pos(ellipse.lat, ellipse.lon), a), { offset: new HeadingPitchRange(0, -CMath.PI_OVER_TWO * 0.85, a * 7), duration: 1.4 });
+      getOrbitControls()?.flyTo({ lat: ellipse.lat, lon: ellipse.lon, range: a * 6, tilt: 15, duration: 1.4 });
     }
     viewer.scene.requestRender();
   }, [ellipse, ready]);
@@ -469,45 +466,75 @@ export default function Globe() {
     viewer.scene.requestRender();
   }, [exaggeration, ready]);
 
-  // ---- terrain-true shadows (regional patch at the pole, local patch at the selected site) ------------
+  // ---- terrain-true shadows (regional patch at the pole; local patches that follow the view) ---------------------
   const selTarget = selected ? targets[selected] : undefined;
+  const fpActive = useStore((s) => (s as unknown as { fpActive?: boolean }).fpActive === true);
   const lastShadowRun = useRef(0);
-  const [shadowKm, setShadowKm] = useState(650);
+  const [plans, setPlans] = useState<ShadowPlan[]>([POLE_PLAN]);
+  const planRef = useRef<ShadowPlan[]>([]);
+  const shadowSlots = useRef<Record<string, { layer: ImageryLayer; provider: ShadowImageryProvider }>>({});
+  const [shadowInfo, setShadowInfo] = useState<Record<string, { km: number; m: number }>>({});
+  // Which patches to compute: re-evaluated when the camera stops moving; recomputed only once the view centre has
+  // moved more than 30% of the patch radius (or the size/resolution step, selection or mode changed).
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || !ready || !layers.shadows) return;
+    const update = () => {
+      if (viewer.isDestroyed()) return;
+      const next = computePlans(viewer, selTarget, fpActive);
+      if (!planRef.current.length || needsReplan(planRef.current, next)) { planRef.current = next; setPlans(next); }
+    };
+    update();
+    viewer.camera.moveEnd.addEventListener(update);
+    return () => { viewer.camera.moveEnd.removeEventListener(update); };
+  }, [ready, layers.shadows, regime, selTarget?.lat, selTarget?.lon, fpActive]);
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || !ready) return;
-    const removeOld = () => { if (shadowLayer.current) { viewer.imageryLayers.remove(shadowLayer.current, true); shadowLayer.current = null; } viewer.scene.requestRender(); };
-    if (!layers.shadows) { removeOld(); setShadowBusy(false); return; }
-    setShadowBusy(true);
+    const slots = shadowSlots.current;
+    const dropSlot = (slot: string) => {
+      const s = slots[slot];
+      cancelShadow(slot);
+      if (!s) return;
+      delete slots[slot];
+      if (!viewer.isDestroyed()) viewer.imageryLayers.remove(s.layer, true);
+      s.provider.dispose();
+      setShadowInfo((i) => { const n = { ...i }; delete n[slot]; return n; });
+    };
     const my = ++shadowToken.current;
-    // Throttled while scrubbing/playing (at most ~2 patches per second), immediate-ish on selection/regime change.
-    const delay = Math.max(120, 450 - (performance.now() - lastShadowRun.current));
-    const timer = setTimeout(async () => {
-      try {
-        lastShadowRun.current = performance.now();
-        const local = regime === 'local';
-        const cam = viewer.camera.positionCartographic;
-        const lat = local ? (selTarget?.lat ?? CMath.toDegrees(cam.latitude)) : -90;
-        const lon = local ? (selTarget?.lon ?? CMath.toDegrees(cam.longitude)) : 0;
-        // regional: 650 km at 1024 px; local: 60 km at 2048 px = 29 m/px (patch accuracy is good at 20-30 m/px)
-        const sizeKm = local ? LOCAL_KM : 650, px = local ? 2048 : 1024;
+    if (!layers.shadows) {
+      for (const k of Object.keys(slots)) dropSlot(k);
+      setShadowBusy(false);
+      if (!viewer.isDestroyed()) viewer.scene.requestRender();
+      return;
+    }
+    for (const k of Object.keys(slots)) if (!plans.some((p) => p.slot === k)) dropSlot(k);
+    const reqs: ShadowReq[] = plans.map((p) => ({ slot: p.slot, lat: p.lat, lon: p.lon, sizeKm: p.sizeKm, px: p.px, t: cursor }));
+    setShadowBusy(true);
+    // Throttled while scrubbing/playing (~2 patches per second); cached patches show immediately.
+    const delay = reqs.every(isShadowCached) ? 0 : Math.max(120, 450 - (performance.now() - lastShadowRun.current));
+    const timer = setTimeout(() => {
+      lastShadowRun.current = performance.now();
+      let left = reqs.length;
+      for (const r of reqs) {
         const t0 = performance.now();
-        const patch: ShadowPatch = await getEngine().shadowPatch(lat, lon, sizeKm, px, cursor);
-        if (my !== shadowToken.current || viewer.isDestroyed()) return;
-        if (import.meta.env.DEV) console.info(`[shadows] ${sizeKm} km @ ${px}px in ${Math.round(performance.now() - t0)} ms`);
-        const layer = new ImageryLayer(new ShadowImageryProvider(patch) as unknown as ImageryProvider, { alpha: 1 });
-        viewer.imageryLayers.add(layer);
-        const old = shadowLayer.current;
-        shadowLayer.current = layer;
-        setShadowMock(!!patch.mock);
-        setShadowKm(sizeKm);
-        setShadowBusy(false);
-        setTimeout(() => { if (old && !viewer.isDestroyed()) { viewer.imageryLayers.remove(old, true); viewer.scene.requestRender(); } }, 250);
-        viewer.scene.requestRender();
-      } catch (e) { console.warn('[shadows]', e); if (my === shadowToken.current) setShadowBusy(false); }
+        requestShadow(r, ({ patch, final, cached }) => {
+          if (viewer.isDestroyed()) return;
+          perfLog('main.shadow', performance.now() - t0, { slot: r.slot, sizeKm: r.sizeKm, px: patch.px, final, cached });
+          const provider = new ShadowImageryProvider(patch);
+          const layer = new ImageryLayer(provider as unknown as ImageryProvider, { alpha: 1 });
+          viewer.imageryLayers.add(layer);
+          const old = slots[r.slot];
+          slots[r.slot] = { layer, provider };
+          setShadowMock(!!patch.mock);
+          setShadowInfo((i) => ({ ...i, [r.slot]: { km: patch.sizeKm, m: (patch.sizeKm * 1000) / patch.px } }));
+          if (old) setTimeout(() => { if (!viewer.isDestroyed()) { viewer.imageryLayers.remove(old.layer, true); viewer.scene.requestRender(); } old.provider.dispose(); }, 250);
+          viewer.scene.requestRender();
+        }).then(() => { if (--left === 0 && my === shadowToken.current) setShadowBusy(false); });
+      }
     }, delay);
     return () => clearTimeout(timer);
-  }, [layers.shadows, cursor, regime, selTarget?.lat, selTarget?.lon, ready]);
+  }, [layers.shadows, cursor, plans, ready]);
 
   // ---- fly requests ----------------------------------------------------------------------------------
   useEffect(() => {
@@ -515,27 +542,29 @@ export default function Globe() {
     if (!viewer || !fly || tokenRef.current === fly.nonce) return;
     tokenRef.current = fly.nonce;
     if (fly.global) {
-      viewer.camera.flyToBoundingSphere(new BoundingSphere(poleTarget(), 1), { offset: poleOffset(), duration: 1.6 });
+      getOrbitControls()?.home();
       return;
     }
     const t = fly.id ? useStore.getState().targets[fly.id] : undefined;
     if (!t) return;
     (async () => {
-      // Frame the local shadow patch: tilted ~28 km view, Sun off to the right so slopes are raking-lit,
-      // centred at the real terrain height so the camera never starts inside relief.
-      let h = 0, sunAz = 0;
-      try {
-        const d = 0.002;
-        const hs = await getEngine().sampleHeights(t.lon - d, t.lat - d, t.lon + d, t.lat + d, 2, 2);
-        h = Math.max(0, ...Array.from(hs).filter(Number.isFinite)) || 0;
-      } catch { /* flat */ }
+      // Frame the local shadow patch: tilted ~28 km view, Sun off to the right so slopes are raking-lit.
+      // The orbit controls sample the terrain around the target and keep the camera clear of it.
+      let sunAz = 0;
       try { sunAz = (await getEngine().sunEarthAt(t.lat, t.lon, useStore.getState().cursor)).sunAz; } catch { /* north */ }
       if (viewer.isDestroyed() || tokenRef.current !== fly.nonce) return;
-      viewer.camera.flyToBoundingSphere(new BoundingSphere(pos(t.lat, t.lon, h), 3000), {
-        offset: new HeadingPitchRange(CMath.toRadians(sunAz - 90), CMath.toRadians(-30), 28000), duration: 2,
-      });
+      await getOrbitControls()?.flyTo({ lat: t.lat, lon: t.lon, range: 28000, tilt: TILT_ON_DEG, heading: sunAz - 90, duration: 2 });
     })();
   }, [fly]);
+
+  // ---- 3D first-person ("Stand here"): camera at the selected site; see firstPerson3d.ts -------------------
+  const fpOpen = useStore((s) => s.fpOpen);
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || !ready) return;
+    void syncFirstPerson(viewer, fpOpen);
+  }, [fpOpen, selected, ready]);
+  useEffect(() => () => { const v = viewerRef.current; if (v && !v.isDestroyed()) void syncFirstPerson(v, false); }, []);
 
   const hv = hover ? targets[hover.id] : null;
   const objM = query.objectives?.[0]?.metric;
@@ -557,8 +586,12 @@ export default function Globe() {
         </div>
       )}
       <div className="gl-toolbar" role="toolbar" aria-label="Map controls">
+        <IconButton solid tip="left" icon={Plus} label="Zoom in" onClick={() => getOrbitControls()?.zoomBy(1.7)} />
+        <IconButton solid tip="left" icon={Minus} label="Zoom out" onClick={() => getOrbitControls()?.zoomBy(1 / 1.7)} />
         <IconButton solid tip="left" icon={House} label="Pole view" onClick={() => flyTo(null, true)} />
         <IconButton solid tip="left" icon={Crosshair} label="Fly to selection" disabled={!selected} onClick={() => selected && flyTo(selected)} />
+        <IconButton solid tip="left" icon={Rotate3d} label={tilted ? 'Top-down view' : 'Tilt view (oblique)'} active={tilted}
+          onClick={() => { const oc = getOrbitControls(); if (oc) oc.setTilt(oc.getTilt() > 10 ? 0 : TILT_ON_DEG); }} />
         <IconButton solid tip="left" icon={Sun} label={layers.shadows ? 'Terrain-true shadows: on' : 'Terrain-true shadows: off'} active={layers.shadows}
           onClick={() => useStore.setState({ layers: { ...layers, shadows: !layers.shadows } })} />
         <span className="gl-relief">
@@ -570,7 +603,7 @@ export default function Globe() {
       {layers.shadows && (
         <div className="gl-status" role="status">
           {shadowBusy && <Spinner />}
-          <span>Terrain-true shadows {'\u00b7'} {shadowKm} km {'\u00b7'} LOLA</span>
+          <span>Terrain-true shadows {'\u00b7'} {(['view', 'site'] as const).filter((k) => shadowInfo[k]).map((k) => `${k === 'site' ? '+ ' : ''}${shadowInfo[k].km} km @ ${formatRes(shadowInfo[k].m)}`).join(' ')} {'\u00b7'} LOLA</span>
           {shadowMock && <Tag tone="warn">demo patch</Tag>}
         </div>
       )}

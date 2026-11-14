@@ -1,11 +1,12 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
-import { ArrowLeft, Compass, Download, Ellipsis, GraduationCap, Link2, ListOrdered, MapPin, Search, ShieldCheck, SlidersHorizontal, Clock } from 'lucide-react';
+import { ArrowLeft, Compass, Download, Ellipsis, Link2, ListOrdered, MapPin, Moon, Search, Sun, ShieldCheck, SlidersHorizontal, Clock } from 'lucide-react';
 import { Drawer } from './components/Drawer.tsx';
 import { FirstPerson } from './components/FirstPerson.tsx';
 import { LeftPanel } from './components/LeftPanel.tsx';
 import { QueryBuilder, QueryInput, QueryStrip } from './components/QueryBar.tsx';
 import { Timeline } from './components/Timeline.tsx';
-import { Badge, Button, IconButton, Popover, Tabs, Toast } from './components/ui.tsx';
+import { Badge, Button, IconButton, Popover, Tabs, ThemeToggle, Toast } from './components/ui.tsx';
+import { toggleTheme, useTheme, writePref } from './lib/theme.ts';
 import { Splash } from './components/Splash.tsx';
 import { Welcome } from './components/Welcome.tsx';
 import { ValidationModal } from './components/ValidationModal.tsx';
@@ -58,10 +59,9 @@ function shareLink() {
 }
 
 function TopBar() {
-  const educator = useStore((s) => s.educator);
   const info = useStore((s) => s.info);
+  const theme = useTheme();
   const [askOpen, setAskOpen] = useState(false);
-  const toggleEdu = () => useStore.setState({ educator: !educator });
   const build = () => useStore.setState({ builderOpen: true });
   const how = () => useStore.setState({ validationOpen: true });
   const tour = () => useStore.setState({ tourStep: 0 });
@@ -78,18 +78,18 @@ function TopBar() {
         <span className="desk-only tb-icons">
           <IconButton icon={Link2} label="Share link" onClick={shareLink} />
           <IconButton icon={Download} label="Export CSV of the selected sites" onClick={exportCsv} />
-          <IconButton icon={GraduationCap} label={educator ? 'Educator mode: on' : 'Educator mode: plain-language help'} active={educator} onClick={toggleEdu} />
-          {educator && <IconButton icon={Compass} label="Start the guided tour" onClick={tour} />}
+          <ThemeToggle />
         </span>
-        <Button icon={ShieldCheck} className="tb-how desk-only" onClick={how}><span className="lbl">How we know</span></Button>
+        <Button variant="ghost" icon={Compass} className="tb-tour desk-only" onClick={tour} title="Start the 60-second guided tour"><span className="lbl">Tour</span></Button>
+        <Button icon={ShieldCheck} className="tb-how desk-only" data-tour="how" onClick={how}><span className="lbl">How we know</span></Button>
         <IconButton icon={Search} label="Ask a question" className="phone-only" onClick={() => { setAskOpen(true); setTimeout(() => (document.querySelector('.qtext') as HTMLInputElement | null)?.focus(), 30); }} />
         <Popover className="phone-only pop-right" trigger={(open, toggle) => <IconButton icon={Ellipsis} label="More actions" active={open} tip="none" onClick={toggle} />}>
           <div className="menu" onClick={closePops}>
             <button onClick={build}><SlidersHorizontal aria-hidden />Build query</button>
             <button onClick={shareLink}><Link2 aria-hidden />Share link</button>
             <button onClick={exportCsv}><Download aria-hidden />Export CSV</button>
-            <button onClick={toggleEdu}><GraduationCap aria-hidden />Educator mode<small>{educator ? 'on' : 'off'}</small></button>
-            {educator && <button onClick={tour}><Compass aria-hidden />Start the tour</button>}
+            <button onClick={toggleTheme}>{theme === 'dark' ? <Sun aria-hidden /> : <Moon aria-hidden />}{theme === 'dark' ? 'Light theme' : 'Dark theme'}</button>
+            <button onClick={tour}><Compass aria-hidden />Take the tour</button>
             <button onClick={how}><ShieldCheck aria-hidden />How we know it{'’'}s right</button>
           </div>
         </Popover>
@@ -156,12 +156,25 @@ export default function App() {
       if (e.key === ' ') { e.preventDefault(); useStore.setState({ playing: !s.playing }); }
       else if (e.key === 'ArrowRight') { e.preventDefault(); setCursor(s.cursor + (e.shiftKey ? DAY : HOUR)); }
       else if (e.key === 'ArrowLeft') { e.preventDefault(); setCursor(s.cursor - (e.shiftKey ? DAY : HOUR)); }
+      else if ((e.key === '[' || e.key === ']') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (window.matchMedia('(max-width: 899px)').matches) return;
+        useStore.setState(e.key === '[' ? { leftCollapsed: !s.leftCollapsed } : { rightCollapsed: !s.rightCollapsed });
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
   const phone = useMedia('(max-width: 899px)');
+  const leftC = useStore((s) => s.leftCollapsed);
+  const rightC = useStore((s) => s.rightCollapsed);
+  const tlC = useStore((s) => s.timelineCollapsed);
+  // persist collapse state; the globe resizes with its container (Cesium watches its canvas size), a resize event nudges it after the grid transition
+  useEffect(() => {
+    writePref('llsn.ui.left', leftC ? '1' : '0'); writePref('llsn.ui.right', rightC ? '1' : '0'); writePref('llsn.ui.timeline', tlC ? '1' : '0');
+    const t = setTimeout(() => window.dispatchEvent(new Event('resize')), 260);
+    return () => clearTimeout(t);
+  }, [leftC, rightC, tlC]);
   const phoneTab = useStore((s) => s.phoneTab);
   const resultsN = useStore((s) => s.results?.results.length ?? 0);
   const tab = phoneTab === 'site' && !selected ? 'results' : phoneTab;
@@ -192,23 +205,23 @@ export default function App() {
         <main className="main phone">
           {globe}
           <div className="sheet" data-tab={tab}>
-            {tab === 'results' && <LeftPanel />}
-            {tab === 'timeline' && <Timeline />}
+            {tab === 'results' && <LeftPanel allowCollapse={false} />}
+            {tab === 'timeline' && <Timeline allowCollapse={false} />}
           </div>
-          {selected && tab === 'site' && !fpOpen && <div className="site-sheet"><Drawer /></div>}
+          {selected && tab === 'site' && !fpOpen && <div className="site-sheet"><Drawer allowCollapse={false} /></div>}
           <div className="sheet-tabs">
             <Tabs active={tab} onChange={(t) => useStore.setState({ phoneTab: t })}
               tabs={[{ id: 'results', label: 'Results', icon: ListOrdered, count: resultsN || undefined }, { id: 'site', label: 'Site', icon: MapPin }, { id: 'timeline', label: 'Timeline', icon: Clock }]} />
           </div>
-          {fpOpen && <div className="fp-layer"><FirstPerson /></div>}
+          {fpOpen && <div className="fp-layer force-dark"><FirstPerson /></div>}
         </main>
       ) : (
         <>
-          <main className={`main ${selected ? 'has-sel' : ''}`}>
+          <main className={`main ${selected ? 'has-sel' : ''} ${leftC ? 'l-collapsed' : ''} ${rightC ? 'r-collapsed' : ''}`}>
             <LeftPanel />
             {globe}
             {selected && <Drawer />}
-            {fpOpen && <div className="fp-layer"><FirstPerson /></div>}
+            {fpOpen && <div className="fp-layer force-dark"><FirstPerson /></div>}
           </main>
           <Timeline />
         </>

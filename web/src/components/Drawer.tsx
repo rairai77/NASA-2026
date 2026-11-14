@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { Check, Crosshair, Download, Ellipsis, Eye, Mountain, Plus, Route, Sunrise, Table2, X, Zap, CircleDashed } from 'lucide-react';
+import { Check, ChevronRight, Crosshair, Download, Ellipsis, Eye, Mountain, PanelRightOpen, Plus, Route, Sunrise, Table2, X, Zap, CircleDashed } from 'lucide-react';
 import { countdowns, sampleAt } from '../lib/countdown.ts';
 import { buildCsv, download, type CsvRow } from '../lib/csv.ts';
 import { placeFor } from '../lib/places.ts';
@@ -9,7 +9,8 @@ import { EllipsePanel } from './EllipsePanel.tsx';
 import { HorizonPlot } from './HorizonPlot.tsx';
 import { PowerPanel } from './PowerPanel.tsx';
 import { TraversePanel } from './TraversePanel.tsx';
-import { Button, Dot, IconButton, Popover, Segmented, Tabs, Tag, Why } from './ui.tsx';
+import { Button, Dot, IconButton, Popover, Segmented, Tabs, Tag, Tooltip, Why } from './ui.tsx';
+import { COMPARE_TIP } from './LeftPanel.tsx';
 
 /** Same export as the top bar: timeline + metrics of the inspected site (and the compare list) as CSV. */
 function exportCsv() {
@@ -73,7 +74,7 @@ const GroupRows = ({ title, children }: { title: string; children: ReactNode }) 
   </>
 );
 
-export function Drawer() {
+export function Drawer({ allowCollapse = true }: { allowCollapse?: boolean }) {
   const id = useStore((s) => s.selected);
   const t = useStore((s) => (s.selected ? s.targets[s.selected] : undefined));
   const d = useStore((s) => (s.selected ? s.data[s.selected] : undefined));
@@ -86,6 +87,7 @@ export function Drawer() {
   const inCompare = useStore((s) => (s.selected ? s.compare.includes(s.selected) : false));
   const full = useStore((s) => s.compare.length >= MAX_COMPARE);
   const tab = useStore((s) => s.inspectorTab);
+  const collapsed = useStore((s) => s.rightCollapsed) && allowCollapse;
   const [pmode, setPmode] = useState<'polar' | 'panorama'>('polar');
   const [zoom, setZoom] = useState(true);
   const [ellOpen, setEllOpen] = useState(false);
@@ -100,8 +102,15 @@ export function Drawer() {
   const demo = mode === 'mock' || (t.kind === 'result' && model === 'mock');
   const name = place?.title ?? t.name;
   const setTab = (k: InspectorTab) => useStore.setState({ inspectorTab: k });
+  if (collapsed) {
+    return (
+      <aside className="drawer pn-drawer pn-rail" aria-label="Site details (collapsed)" data-tour="inspector">
+        <IconButton icon={PanelRightOpen} label="Expand the site inspector ( ] )" tip="left" onClick={() => useStore.setState({ rightCollapsed: false })} />
+      </aside>
+    );
+  }
   return (
-    <aside className="drawer pn-drawer" aria-label="Site details">
+    <aside className="drawer pn-drawer" aria-label="Site details" data-tour="inspector">
       <div className="pn-scroll">
         <header className="pn-dh">
           <div className="pn-dh-main">
@@ -109,7 +118,10 @@ export function Drawer() {
             <p className="mono">{t.lat.toFixed(4)}{'°'}, {t.lon.toFixed(4)}{'°'}</p>
             {(place?.distLabel || t.group) && <p className="pn-dh-sub">{place?.distLabel ? `${place.distLabel} from the catalog site` : t.group}</p>}
           </div>
-          <IconButton icon={X} label="Close inspector" tip="left" onClick={() => select(null)} />
+          <span className="pn-dh-btns">
+            {allowCollapse && <IconButton className="pn-collapse" icon={ChevronRight} label="Collapse the inspector ( ] )" tip="bottom" onClick={() => useStore.setState({ rightCollapsed: true })} />}
+            <IconButton icon={X} label="Close inspector" tip="left" onClick={() => select(null)} />
+          </span>
         </header>
         <div className="pn-tags">
           {t.representative && <Tag tone="warn" title="One point stands in for a whole candidate region">Representative point</Tag>}
@@ -138,11 +150,11 @@ export function Drawer() {
         </section>
 
         <div className="pn-actions">
-          <Button variant="primary" icon={Eye} onClick={() => useStore.setState({ fpOpen: true })} disabled={!d?.horizon} title="First-person view from 2 m above the ground">Stand here</Button>
+          <Button variant="primary" icon={Eye} data-tour="stand" onClick={() => useStore.setState({ fpOpen: true })} disabled={!d?.horizon} title="First-person view from 2 m above the ground">Stand here</Button>
           <Button icon={Crosshair} onClick={() => flyTo(id)}>Fly to</Button>
-          <Button icon={inCompare ? Check : Plus} active={inCompare} disabled={!inCompare && full} onClick={() => toggleCompare(id)} title={inCompare ? 'Remove from the timeline' : full ? `Timeline is full (${MAX_COMPARE} sites)` : 'Add to the timeline'}>
-            <span className="pn-hide-s">{inCompare ? 'On timeline' : 'Timeline'}</span>
-          </Button>
+          <Tooltip side="bottom" wrap content={inCompare ? 'Remove this site from the timeline comparison' : full ? `Timeline is full (${MAX_COMPARE} sites). Remove one first.` : COMPARE_TIP}>
+            <Button icon={inCompare ? Check : Plus} active={inCompare} disabled={!inCompare && full} onClick={() => toggleCompare(id)}>Compare</Button>
+          </Tooltip>
           <Popover className="pn-more" trigger={(open, toggle) => <IconButton icon={Ellipsis} label="More actions" tip="bottom" active={open} onClick={toggle} />}>
             <button className="pn-menu-i" data-close-popover onClick={() => { setEllOpen(!ellOpen); }}><CircleDashed aria-hidden />{ellOpen ? 'Hide landing ellipse' : 'Landing ellipse'}</button>
             <button className="pn-menu-i" data-close-popover onClick={exportCsv}><Download aria-hidden />Export CSV</button>
@@ -157,7 +169,7 @@ export function Drawer() {
           { id: 'data', label: 'Data', icon: Table2 },
         ]} />
         {tab === 'sky' && (
-          <div className="pn-pane">
+          <div className="pn-pane" data-tour="sky">
             <div className="pn-pane-h">
               <h3 className="ui-section-title">{edu ? 'Skyline' : 'Horizon'}<Why id="horizon-plot" /><Why id="why-pole-hard" /><Why id="sun-skims-horizon" /></h3>
               <Segmented label="Plot type" value={pmode} onChange={setPmode} options={[{ value: 'polar', label: 'Polar' }, { value: 'panorama', label: 'Panorama' }]} />

@@ -3,22 +3,22 @@ import * as d3 from 'd3';
 import type { VisResult } from '../engine/api.ts';
 import { DAY, HOUR, clamp, fmtUTC } from '../lib/time.ts';
 import { select, setCursor, toggleCompare, useActiveIds, useStore, windowOf } from '../store.ts';
-import { HelpCircle, Pause, Play, StepBack, StepForward, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, HelpCircle, Info, Pause, Play, StepBack, StepForward, X } from 'lucide-react';
 import { sampleAt } from '../lib/countdown.ts';
 import { placeFor, shortName } from '../lib/places.ts';
+import { cssVar, palette, useTheme } from '../lib/theme.ts';
 import { Button, Dot, IconButton, Kbd, Segmented, Tooltip, Why } from './ui.tsx';
 
-// Canvas colours mirror the CSS tokens in design.css.
+// Static (dark) colours for code that draws on the always-dark globe/first-person view. Timeline canvases read theme-aware values from palette().
 export const COLORS = { sun: '#f5b700', earth: '#4fa3ff', both: '#ffffff', eclipse: '#ff4fd8' };
 const ROW_H = 56;
 const AXIS_H = 26;
 export const COMMS_COLORS = { clear: '#34d399', marginal: '#f59e0b', gap: '#ef4444' };
 // lane geometry inside a row (offsets from the row's y): sun, earth, both, comms
 const LANES: [number, number][] = [[3, 11], [16, 11], [29, 9], [40, 9]];
-const LANE_BG = 'rgba(255,255,255,0.05)';
 
 function laneBackgrounds(g: CanvasRenderingContext2D, W: number, y: number, lanes: [number, number][]) {
-  g.fillStyle = LANE_BG;
+  g.fillStyle = palette().laneBg;
   g.beginPath();
   for (const [o, h] of lanes) g.roundRect(0, y + o, W, h, 3);
   g.fill();
@@ -42,6 +42,7 @@ export function fmtClock(t: number): string {
  *  With a relay orbiter assumed the whole lane is clear. Needs linkMargin (and dsnUp) from the engine. */
 export function drawCommsRow(g: CanvasRenderingContext2D, v: VisResult | undefined, x: (t: number) => number, v0: number, v1: number, W: number, y: number, relay = false) {
   const [co, ch] = LANES[3];
+  const P = palette();
   laneBackgrounds(g, W, y, [LANES[3]]);
   if (!v || v.t.length < 2 || (!v.linkMargin && !relay)) return;
   g.save(); laneClip(g, W, y, [LANES[3]]);
@@ -64,9 +65,9 @@ export function drawCommsRow(g: CanvasRenderingContext2D, v: VisResult | undefin
   }
   for (let c = 0; c < cols; c++) {
     if (!cnt[c]) continue;
-    g.globalAlpha = cl[c] / cnt[c]; g.fillStyle = COMMS_COLORS.clear; g.fillRect(c, y + co, 1, ch);
-    g.globalAlpha = ma[c] / cnt[c]; g.fillStyle = COMMS_COLORS.marginal; g.fillRect(c, y + co, 1, ch);
-    g.globalAlpha = gp[c] / cnt[c]; g.fillStyle = COMMS_COLORS.gap; g.fillRect(c, y + co, 1, ch);
+    g.globalAlpha = cl[c] / cnt[c]; g.fillStyle = P.comms; g.fillRect(c, y + co, 1, ch);
+    g.globalAlpha = ma[c] / cnt[c]; g.fillStyle = P.marginal; g.fillRect(c, y + co, 1, ch);
+    g.globalAlpha = gp[c] / cnt[c]; g.fillStyle = P.gap; g.fillRect(c, y + co, 1, ch);
   }
   g.globalAlpha = 1;
   g.restore();
@@ -77,6 +78,7 @@ export const SPEEDS: [string, number][] = [['1 h/s', HOUR], ['6 h/s', 6 * HOUR],
 export function drawRow(g: CanvasRenderingContext2D, v: VisResult | undefined, x: (t: number) => number, v0: number, v1: number, W: number, y: number) {
   laneBackgrounds(g, W, y, LANES.slice(0, 3));
   if (!v || v.t.length < 2) return;
+  const P = palette();
   g.save(); laneClip(g, W, y, LANES.slice(0, 3));
   const n = v.t.length, step = v.t[1] - v.t[0];
   const t0 = v.t[0];
@@ -94,10 +96,10 @@ export function drawRow(g: CanvasRenderingContext2D, v: VisResult | undefined, x
   }
   for (let c = 0; c < cols; c++) {
     if (!cnt[c]) continue;
-    g.globalAlpha = su[c] / cnt[c]; g.fillStyle = COLORS.sun; g.fillRect(c, y + LANES[0][0], 1, LANES[0][1]);
-    g.globalAlpha = ea[c] / cnt[c]; g.fillStyle = COLORS.earth; g.fillRect(c, y + LANES[1][0], 1, LANES[1][1]);
-    g.globalAlpha = bo[c] / cnt[c]; g.fillStyle = COLORS.both; g.fillRect(c, y + LANES[2][0], 1, LANES[2][1]);
-    if (ec[c]) { g.globalAlpha = 1; g.fillStyle = COLORS.eclipse; g.fillRect(c, y + LANES[0][0], 1, LANES[0][1]); }
+    g.globalAlpha = su[c] / cnt[c]; g.fillStyle = P.sun; g.fillRect(c, y + LANES[0][0], 1, LANES[0][1]);
+    g.globalAlpha = ea[c] / cnt[c]; g.fillStyle = P.earth; g.fillRect(c, y + LANES[1][0], 1, LANES[1][1]);
+    g.globalAlpha = bo[c] / cnt[c]; g.fillStyle = P.both; g.fillRect(c, y + LANES[2][0], 1, LANES[2][1]);
+    if (ec[c]) { g.globalAlpha = 1; g.fillStyle = P.ecl; g.fillRect(c, y + LANES[0][0], 1, LANES[0][1]); }
   }
   g.globalAlpha = 1;
   g.restore();
@@ -134,15 +136,16 @@ function Help({ relay }: { relay: boolean }) {
 function Legend({ relay }: { relay: boolean }) {
   return (
     <span className="tl-legend">
-      <span><Dot tone="sun" />Sun</span><span><Dot tone="earth" />Earth</span><span><Dot tone="both" />both</span><span><Dot tone="ecl" />eclipse</span>
+      <span><Dot tone="sun" />Sun</span><span><Dot tone="earth" />Earth</span><span><Dot tone="both" />Both</span><span><Dot tone="ecl" />Eclipse</span>
       <span className="sep" />
-      <span><Dot tone="comms" />comms clear</span><span><Dot tone="marginal" />marginal</span><span><Dot tone="gap" />DSN gap</span>
-      {relay && <span className="note">(relay assumed)</span>}
+      <span><Dot tone="comms" />Comms clear</span><span><Dot tone="marginal" />Marginal</span><span><Dot tone="gap" />DSN gap</span>
+      {relay && <span className="note">(Relay assumed)</span>}
     </span>
   );
 }
 
-function Header({ win, zoomed }: { win: [number, number]; zoomed: boolean }) {
+function Header({ win, zoomed, allowCollapse }: { win: [number, number]; zoomed: boolean; allowCollapse: boolean }) {
+  const collapsed = useStore((s) => s.timelineCollapsed);
   const playing = useStore((s) => s.playing);
   const speed = useStore((s) => s.speed);
   const cursor = useStore((s) => s.cursor);
@@ -174,12 +177,14 @@ function Header({ win, zoomed }: { win: [number, number]; zoomed: boolean }) {
         <span className="tl-legend-wrap"><Why id="timeline-bands" /><Legend relay={relay} /></span>
         {zoomed && <Button size="sm" variant="ghost" onClick={() => useStore.setState({ view: win })}>Reset zoom</Button>}
         <Help relay={relay} />
+        {allowCollapse && <IconButton tip="top" size="sm" icon={collapsed ? ChevronUp : ChevronDown} label={collapsed ? 'Expand the timeline' : 'Collapse the timeline to its header'} onClick={() => useStore.setState({ timelineCollapsed: !collapsed })} />}
       </div>
     </div>
   );
 }
 
-export function Timeline() {
+export function Timeline({ allowCollapse = true }: { allowCollapse?: boolean }) {
+  const collapsed = useStore((s) => s.timelineCollapsed) && allowCollapse;
   const ids = useActiveIds();
   const targets = useStore((s) => s.targets);
   const data = useStore((s) => s.data);
@@ -188,6 +193,7 @@ export function Timeline() {
   const query = useStore((s) => s.query);
   const cursor = useStore((s) => s.cursor);
   const markers = useStore((s) => s.markers);
+  const theme = useTheme();
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [W, setW] = useState(800);
@@ -219,27 +225,29 @@ export function Timeline() {
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, W, H);
     // axis
+    const P = palette();
     const scale = d3.scaleUtc().domain([new Date(view[0] * 1000), new Date(view[1] * 1000)]).range([0, W]);
     const ticks = scale.ticks(Math.max(3, Math.floor(W / 110)));
     const fmt = scale.tickFormat(Math.max(3, Math.floor(W / 110)));
     g.font = '500 11px "JetBrains Mono", ui-monospace, monospace';
     g.textBaseline = 'middle';
-    g.strokeStyle = 'rgba(255,255,255,0.07)'; g.fillStyle = '#8a93a6';
+    g.strokeStyle = P.border; g.fillStyle = P.text3;
     for (const tk of ticks) {
       const x = Math.round(scale(tk)) + 0.5;
       g.beginPath(); g.moveTo(x, AXIS_H - 6); g.lineTo(x, H); g.stroke();
       g.fillText(fmt(tk), x + 4, 10);
     }
     // window edges
-    g.fillStyle = 'rgba(6,8,12,0.55)';
+    g.fillStyle = cssVar('--bg'); g.globalAlpha = 0.55;
     const xa = xOf(win[0]), xb = xOf(win[1]);
     if (xa > 0) g.fillRect(0, AXIS_H, xa, H - AXIS_H);
     if (xb < W) g.fillRect(xb, AXIS_H, W - xb, H - AXIS_H);
+    g.globalAlpha = 1;
     ids.forEach((id, i) => {
       drawRow(g, data[id]?.vis, xOf, view[0], view[1], W, AXIS_H + i * ROW_H);
       drawCommsRow(g, data[id]?.vis, xOf, view[0], view[1], W, AXIS_H + i * ROW_H, query.relay === true);
     });
-  }, [ids, data, view, W, H, win, xOf, query.relay]);
+  }, [ids, data, view, W, H, win, xOf, query.relay, theme]);
 
   // wheel zoom / pan
   useEffect(() => {
@@ -329,9 +337,9 @@ export function Timeline() {
     );
   }
   return (
-    <section className="timeline" aria-label="Shared timeline">
-      <Header win={win} zoomed={zoomed} />
-      <div className="tl-body" style={{ height: H }}>
+    <section className={`timeline ${collapsed ? 'is-collapsed' : ''}`} aria-label="Shared timeline" data-tour="timeline">
+      <Header win={win} zoomed={zoomed} allowCollapse={allowCollapse} />
+      <div className="tl-body" style={{ height: H }} hidden={collapsed}>
         <div className="tl-labels">
           <div style={{ height: AXIS_H }} />
           {ids.length === 0 && <div className="tl-empty" style={{ height: ROW_H }}>Select a site or result</div>}
@@ -363,6 +371,7 @@ export function Timeline() {
           )}
         </div>
       </div>
+      {!collapsed && ids.length === 1 && <p className="tl-hint"><Info aria-hidden />Use Compare on other sites to add rows.</p>}
     </section>
   );
 }

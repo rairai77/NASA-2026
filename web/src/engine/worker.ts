@@ -9,6 +9,7 @@ import type {
 import { regionIsCoarse } from '../query/query.ts';
 import { loadFaults, loadMissions, loadSites, fetchJsonMaybe } from './catalog.ts';
 import { MockEngine, parseWhen } from './mock.ts';
+import { perfLog, PERF } from './perf.ts';
 
 // import.meta.glob resolves to {} when the pkg has not been generated yet, so the build
 // never breaks on the missing module; once pkg exists it is bundled (lazy chunk).
@@ -97,6 +98,8 @@ async function setupCache(base: string): Promise<string> {
   return version;
 }
 const mem = new Map<string, Promise<Uint8Array | null>>();
+/** Fetch Priority hint for this worker's requests: the terrain worker asks for 'high', the shadow worker 'low'. */
+let fetchPriority: 'auto' | 'high' | 'low' = 'auto';
 
 async function gunzip(buf: ArrayBuffer): Promise<Uint8Array> {
   const ds = new DecompressionStream('gzip');
@@ -113,7 +116,7 @@ async function fetchRaw(url: string): Promise<ArrayBuffer | null> {
     const hit = await cache?.match(url);
     if (hit) return await hit.arrayBuffer();
   } catch { /* ignore */ }
-  const res = await fetch(url);
+  const res = await fetch(url, { priority: fetchPriority });
   if (!res.ok) return null;
   if ((res.headers.get('content-type') ?? '').includes('text/html')) return null; // SPA fallback => absent
   const buf = await res.arrayBuffer();
@@ -122,7 +125,7 @@ async function fetchRaw(url: string): Promise<ArrayBuffer | null> {
 }
 
 /** Cached, de-duplicated fetch; *.gz files are gunzipped. null if absent/corrupt. */
-function getBytes(url: string): Promise<Uint8Array | null> {
+function getBytes(url: string, retain = true): Promise<Uint8Array | null> {
   let p = mem.get(url);
   if (!p) {
     p = (async () => {
@@ -140,7 +143,9 @@ function getBytes(url: string): Promise<Uint8Array | null> {
       }
     })();
     mem.set(url, p);
-    p.then((v) => { if (v === null) mem.delete(url); });
+    // Terrain tiles are copied into wasm memory by addTile; keeping a second JS copy would double their footprint.
+    p.then((v) => { if (v === null) mem.delete(url); }).catch(() => mem.delete(url));
+    if (!retain) p.then(() => setTimeout(() => mem.delete(url), 2000)); // short window so concurrent callers share one fetch
   }
   return p;
 }
@@ -158,6 +163,10 @@ async function mapLimit<T>(items: T[], limit: number, fn: (x: T, i: number) => P
 // ---------------------------------------------------------------------------------------
 class RealEngine implements EngineApi {
   private eng!: WasmEngine;
+  private wasmMem?: WebAssembly.Memory;
+  private tilesAdded = 0;
+  private role: 'full' | 'terrain' | 'shadow' = 'full';
+  private tilePending = new Map<string, Promise<void>>();
   private base = '/';
   private terrain: TerrainManifest | null = null;
   private index: IndexManifest | null = null;
@@ -169,19 +178,24 @@ class RealEngine implements EngineApi {
   private curatedP?: Promise<Record<string, CuratedSite>>;
 
   /** Returns null when the real engine can't start (so the caller falls back to mock). */
-  async tryInit(baseUrl: string): Promise<InitInfo | null> {
+  async tryInit(baseUrl: string, role: 'full' | 'terrain' | 'shadow' = 'full'): Promise<InitInfo | null> {
     this.base = baseUrl;
+    this.role = role;
+    fetchPriority = role === 'terrain' ? 'high' : role === 'shadow' ? 'low' : 'auto';
     await setupCache(baseUrl);
     const loader = pkgLoaders['./pkg/lunar_engine.js'];
     if (!loader) { this.notes.push('wasm pkg not built (web/src/engine/pkg missing)'); return null; }
-    const ephemMeta = await getBytes(`${baseUrl}data/ephem/ephem.json`);
-    const ephemBin = await getBytes(`${baseUrl}data/ephem/ephem.f32`);
+    // The terrain worker only samples heights: no ephemeris, DSN table or catalogs needed.
+    const needEphem = role !== 'terrain';
+    const ephemMeta = needEphem ? await getBytes(`${baseUrl}data/ephem/ephem.json`) : new Uint8Array(0);
+    const ephemBin = needEphem ? await getBytes(`${baseUrl}data/ephem/ephem.f32`) : new Uint8Array(0);
     if (!ephemMeta || !ephemBin) { this.notes.push('/data/ephem/ephem.json missing'); return null; }
     try {
       const mod = await loader();
-      await mod.default();
+      const out = (await mod.default()) as { memory?: WebAssembly.Memory } | undefined;
+      this.wasmMem = out?.memory;
       this.eng = new mod.Engine();
-      this.eng.loadEphemeris(new TextDecoder().decode(ephemMeta), ephemBin);
+      if (needEphem) this.eng.loadEphemeris(new TextDecoder().decode(ephemMeta), ephemBin);
     } catch (e) {
       this.notes.push(`wasm init failed: ${(e as Error).message}`);
       console.warn('[engine] wasm init failed', e);
@@ -192,15 +206,15 @@ class RealEngine implements EngineApi {
       this.terrain = JSON.parse(new TextDecoder().decode(tm));
       this.eng.loadTerrainManifest(new TextDecoder().decode(tm));
     } else this.notes.push('terrain manifest missing: horizons use demo terrain');
-    const meta = JSON.parse(new TextDecoder().decode(ephemMeta));
+    const meta = needEphem ? JSON.parse(new TextDecoder().decode(ephemMeta)) : {};
     // real comms: DSN Moon-elevation table on the ephemeris grid (1.7 MB)
-    try {
+    if (role === 'full') try {
       const dm = await getBytes(`${baseUrl}data/dsn/dsn.json`);
       const db = await getBytes(`${baseUrl}data/dsn/dsn.i16`);
       if (dm && db) { this.eng.loadDsn(new TextDecoder().decode(dm), db); this.dsnLoaded = true; }
       else this.notes.push('DSN table missing: comms metrics assume Earth in view only');
     } catch (e) { this.notes.push(`DSN load failed: ${(e as Error).message}`); }
-    await this.mock.init(baseUrl);
+    if (role === 'full') await this.mock.init(baseUrl);
     return {
       threads: self.navigator.hardwareConcurrency ?? 1,
       crossOriginIsolated: self.crossOriginIsolated === true,
@@ -237,14 +251,26 @@ class RealEngine implements EngineApi {
       return { lvl, tx: Number(tx), ty: Number(ty) };
     }).filter((t) => !this.eng.hasTile(t.lvl, t.tx, t.ty));
     let done = 0;
-    await mapLimit(todo, 8, async (t) => {
-      const path = this.tilePath(t.lvl, t.tx, t.ty);
-      if (path) {
-        const raw = await getBytes(path);
-        if (raw) { try { this.eng.addTile(t.lvl, t.tx, t.ty, raw); } catch (e) { console.warn('[engine] addTile', e); } }
+    await mapLimit(todo, this.role === 'full' ? 8 : 16, async (t) => {
+      const key = `${t.lvl}/${t.ty}/${t.tx}`;
+      let p = this.tilePending.get(key);
+      if (!p) {
+        p = (async () => {
+          const path = this.tilePath(t.lvl, t.tx, t.ty);
+          if (!path) return;
+          const raw = await getBytes(path, false);
+          if (raw && !this.eng.hasTile(t.lvl, t.tx, t.ty)) { try { this.eng.addTile(t.lvl, t.tx, t.ty, raw); this.tilesAdded++; } catch (e) { console.warn('[engine] addTile', e); } }
+        })().finally(() => this.tilePending.delete(key));
+        this.tilePending.set(key, p);
       }
+      await p;
       onProgress?.({ stage: 'Loading terrain tiles', done: ++done, total: todo.length });
     });
+  }
+
+  /** Dev: wasm linear memory and tile count of this worker. */
+  memInfo(): { wasmMB: number; tiles: number } {
+    return { wasmMB: Math.round(((this.wasmMem?.buffer.byteLength ?? 0) / 1048576) * 10) / 10, tiles: this.tilesAdded };
   }
 
   async horizon(lat: number, lon: number, heightM = 2): Promise<HorizonResult> {
@@ -394,20 +420,37 @@ class RealEngine implements EngineApi {
   }
 
   async sampleHeights(w: number, s: number, e: number, n: number, nw: number, nh: number): Promise<Float32Array> {
+    const t0 = performance.now();
     await this.ensureTiles(this.eng.requiredTilesRect(w, s, e, n, nw, nh));
-    return this.eng.sampleHeights(w, s, e, n, nw, nh);
+    const t1 = performance.now();
+    const r = this.eng.sampleHeights(w, s, e, n, nw, nh);
+    perfLog('worker.sampleHeights', performance.now() - t0, { fetchMs: Math.round(t1 - t0), computeMs: Math.round(performance.now() - t1) });
+    return r;
   }
 
   async sunEarthAt(lat: number, lon: number, t: number): Promise<SunEarth> {
     return this.eng.sunEarthAt(lat, lon, t);
   }
 
+  /** Fetch (and load) the DEM tiles a patch will read, without computing anything. Returns the tile count. */
+  async prefetchPatch(lat: number, lon: number, sizeKm: number, px: number): Promise<number> {
+    if (!this.terrain || !this.eng.requiredTilesPatch) return 0;
+    const keys = this.eng.requiredTilesPatch(lat, lon, sizeKm, px);
+    const t0 = performance.now();
+    await this.ensureTiles(keys);
+    perfLog('worker.prefetchPatch', performance.now() - t0, { sizeKm, px, tiles: keys.length });
+    return keys.length;
+  }
+
   async shadowPatch(lat: number, lon: number, sizeKm: number, px: number, t: number): Promise<ShadowPatch> {
     if (!this.terrain || !this.eng.shadowPatch) return this.mock.shadowPatch(lat, lon, sizeKm, px, t);
     const keys = this.eng.requiredTilesPatch ? this.eng.requiredTilesPatch(lat, lon, sizeKm, px) : this.eng.requiredTilesArea(lat, lon, sizeKm / 2 + 20);
+    const t0 = performance.now();
     await this.ensureTiles(keys);
+    const t1 = performance.now();
     const r = this.eng.shadowPatch(lat, lon, sizeKm, px, t) as { data?: Uint8Array; px?: number; centerLat?: number; centerLon?: number; sunAz?: number; sunEl?: number } | Uint8Array;
     if (r instanceof Uint8Array) return { lat, lon, sizeKm, px, data: r };
+    perfLog('worker.shadowPatch', performance.now() - t0, { sizeKm, px, tiles: keys.length, fetchMs: Math.round(t1 - t0), computeMs: Math.round(performance.now() - t1) });
     const out: ShadowPatch = { lat: r.centerLat ?? lat, lon: r.centerLon ?? lon, sizeKm, px: r.px ?? px, data: r.data as Uint8Array, sunAz: r.sunAz, sunEl: r.sunEl };
     return Comlink.transfer(out, [out.data.buffer]);
   }
@@ -438,7 +481,7 @@ const api: EngineApi = {
   horizon: (la, lo, h) => impl.horizon(la, lo, h),
   visibility: (la, lo, a, b, o) => impl.visibility(la, lo, a, b, o),
   compare: (p, a, b) => impl.compare(p, a, b),
-  rank: (q, cb) => impl.rank(q, cb),
+  rank: async (q, cb) => { const t0 = performance.now(); const r = await impl.rank(q, cb); perfLog('worker.rank', performance.now() - t0, { n: r.results.length }); return r; },
   ellipse: (a) => impl.ellipse(a),
   sampleHeights: (...a) => impl.sampleHeights(...a),
   sunEarthAt: (la, lo, t) => impl.sunEarthAt(la, lo, t),
@@ -447,5 +490,18 @@ const api: EngineApi = {
   power: (la, lo, a, b, p, o) => impl.power(la, lo, a, b, p, o),
   traverse: (s, g, t, l, c) => impl.traverse(s, g, t, l, c),
 };
+/** Lightweight init for the dedicated terrain / shadow workers (same module, smaller footprint). */
+(api as unknown as Record<string, unknown>).initLite = async (baseUrl: string, role: 'terrain' | 'shadow') => {
+  try {
+    const real = new RealEngine();
+    const info = await real.tryInit(baseUrl, role);
+    if (info) { impl = real; return info; }
+  } catch (e) { console.warn(`[engine] ${role} worker falling back to mock`, e); }
+  impl = new MockEngine(['Mock engine: synthetic demo data']);
+  return impl.init(baseUrl);
+};
+(api as unknown as Record<string, unknown>).prefetchPatch = (la: number, lo: number, s: number, px: number) =>
+  (impl as unknown as { prefetchPatch?: (...a: number[]) => Promise<number> }).prefetchPatch?.(la, lo, s, px) ?? Promise.resolve(0);
+if (PERF) (api as unknown as Record<string, unknown>).memInfo = () => (impl as unknown as { memInfo?: () => unknown }).memInfo?.() ?? null;
 
 Comlink.expose(api);

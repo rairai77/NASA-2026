@@ -1,18 +1,38 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Filter, Objective, Query } from '../engine/api.ts';
 import { RANKABLE, METRIC_BY_NAME, metricLabel } from '../query/metrics.ts';
 import { addDays, regionIsCoarse } from '../query/query.ts';
-import { useStore } from '../store.ts';
+import { WINDOW_MAX, WINDOW_MIN, useStore, windowProblem } from '../store.ts';
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, TriangleAlert, X } from 'lucide-react';
 import { Button, IconButton, NumInput } from './ui.tsx';
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 export function WindowEditor({ q, onChange }: { q: Query; onChange: (w: Query['window']) => void }) {
   const s = q.window.start.slice(0, 10), e = q.window.end.slice(0, 10);
-  const shift = (d: number) => onChange({ start: addDays(s, d), end: addDays(e, d) });
+  const [ds, setDs] = useState(s), [de, setDe] = useState(e);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => { setDs(s); setDe(e); }, [s, e]);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const problem = DATE_RE.test(ds) && DATE_RE.test(de) ? windowProblem({ start: ds, end: de }) : 'Enter complete dates';
+  const commit = (a: string, b: string) => {
+    clearTimeout(timer.current);
+    if (!DATE_RE.test(a) || !DATE_RE.test(b) || windowProblem({ start: a, end: b })) return;
+    if (a !== s || b !== e) onChange({ start: a, end: b });
+  };
+  const edit = (a: string, b: string, now = false) => {
+    setDs(a); setDe(b);
+    clearTimeout(timer.current);
+    if (now) commit(a, b); else timer.current = setTimeout(() => commit(a, b), 400);
+  };
+  const shift = (d: number) => edit(addDays(ds, d), addDays(de, d), true);
+  const key = (ev: React.KeyboardEvent) => { if (ev.key === 'Enter') commit(ds, de); };
+  const onStart = (v: string) => edit(v, DATE_RE.test(v) && v >= de && !windowProblem({ start: v, end: addDays(v, 1) }) ? addDays(v, 1) : de);
   return (
     <div className="ed">
-      <label>Start (UTC)<input type="date" value={s} onChange={(ev) => ev.target.value && onChange({ start: ev.target.value, end: e <= ev.target.value ? addDays(ev.target.value, 1) : e })} /></label>
-      <label>End (exclusive)<input type="date" value={e} min={addDays(s, 1)} onChange={(ev) => ev.target.value && onChange({ start: s, end: ev.target.value })} /></label>
+      <label>Start (UTC)<input type="date" value={ds} min={WINDOW_MIN} max={WINDOW_MAX} aria-invalid={!!problem} onChange={(ev) => onStart(ev.target.value)} onBlur={() => commit(ds, de)} onKeyDown={key} /></label>
+      <label>End (exclusive)<input type="date" value={de} min={WINDOW_MIN} max={WINDOW_MAX} aria-invalid={!!problem} onChange={(ev) => edit(ds, ev.target.value)} onBlur={() => commit(ds, de)} onKeyDown={key} /></label>
+      {problem && <p className="hint warnline" role="alert"><TriangleAlert aria-hidden size={13} /> {problem}</p>}
       <div className="ed-lbl">Shift the window</div>
       <div className="row shift">
         <Button size="sm" icon={ChevronLeft} onClick={() => shift(-30)}>30 d</Button>
@@ -22,7 +42,7 @@ export function WindowEditor({ q, onChange }: { q: Query; onChange: (w: Query['w
       </div>
       <div className="ed-lbl">Or set its length</div>
       <div className="row shift">
-        {[7, 30, 90, 365].map((d) => <Button key={d} size="sm" variant="ghost" onClick={() => onChange({ start: s, end: addDays(s, d) })}>{d} d</Button>)}
+        {[7, 30, 90, 365].map((d) => <Button key={d} size="sm" variant="ghost" onClick={() => edit(ds, addDays(ds, d), true)}>{d} d</Button>)}
       </div>
     </div>
   );

@@ -37,10 +37,10 @@ export function ValidationModal() {
           <Sec icon={Cpu} title="3. Engine, PGDA and other checks">
             <div className="tbl-wrap"><table className="mtable valid kv"><tbody>{RESULTS.map((r) => <tr key={r.h}><th>{r.h}</th><td>{r.t} <Tag>{r.src}</Tag></td></tr>)}</tbody></table></div>
           </Sec>
-          <Sec icon={History} title="4. Mission replay">
+          <Sec icon={History} title="4. Mission check">
             <div className="tbl-wrap"><table className="mtable valid"><thead><tr><th>Mission</th><th>{'Δ'}</th><th>Context</th></tr></thead>
               <tbody>{REPLAY_ROWS.map((r) => <tr key={r[0]}><th>{r[0]}</th><td>{r[1]}</td><td>{r[2]}</td></tr>)}</tbody></table></div>
-            <p className="hint">{REPLAY_NOTE} Open the <b>Replay</b> tab to run them live.</p>
+            <p className="hint">{REPLAY_NOTE} Open the <b>Mission check</b> tab to run them live.</p>
           </Sec>
           <Sec icon={ListChecks} title="Not yet checked">
             <ul>{NOT_YET.map((n, i) => <li key={i}>{n}</li>)}</ul>
