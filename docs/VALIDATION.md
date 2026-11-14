@@ -110,3 +110,17 @@ between comms and Earth hours). `relay: true` gives comms hours = window hours. 
 150 km, 6 h steps, 68 files, largest 13.3 MiB. Build: horizons 217 s + bitsets for 60 months 183 s on 4 contended cores.
 A 4-month bbox query (-60..60 E, -30..30 N, slope <= 5 deg): rankCoarse 0.59 s over 64,800 cells and rankRefine of 50
 candidates 0.14 s in WASM (Node); whole-Moon unfiltered coarse pass over 583,200 cells works. Results are flagged `coarse`.
+
+**Mission replay** (`pipeline/missions_pred.py` → `data/missions_pred.json`; horizon from the finest DEM covering each
+site, 15-min steps). Delta = our predicted local sunset (Sun fraction 0.5 against the terrain horizon) minus the reported
+end of operations from press releases (`data-src/SOURCES.md`, uncertain by hours):
+
+| Mission | Lat | DEM | Reported end | Predicted sunset | Delta | Reading |
+|---|---|---|---|---|---|---|
+| IM-1 (Odysseus) | -80.13 | 80 m | 2024-02-29 17:00 | 2024-03-02 11:16 | +42.3 h | tipped lander, one panel lit, died before true sunset |
+| Chandrayaan-3 (Vikram) | -69.37 | 240 m | 2023-09-04 02:30 | 2023-09-04 06:03 | +3.6 h | put to sleep as sunset approached |
+| Blue Ghost 1 | +18.56 | 474 m | 2025-03-16 23:15 | 2025-03-16 19:49 | -3.4 h | ran about 5 h into the night on battery |
+
+Blue Ghost 1 also saw the 2025-03-14 total eclipse of the Sun by Earth; the engine's eclipse-aware prediction marks that
+dark period (2025-03-14 05:40 UTC) separately from sunset. SLIM, IM-2 and Hakuto-R M2 ended in landing anomalies, so
+their deltas (+275 h, +302 h, +313 h) are not prediction errors.
