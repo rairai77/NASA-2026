@@ -20,6 +20,7 @@ export function ReplayTab() {
             <tr className="delta"><th>{'Δ'} (predicted {'−'} reported)</th><td>{replay.deltaH === null ? '—' : `${replay.deltaH >= 0 ? '+' : ''}${replay.deltaH.toFixed(1)} h`}</td></tr>
           </tbody></table>
           <p className="hint">End kind: <b>{KIND_LABEL[replay.endKind] ?? (replay.endKind || 'unknown')}</b> {'·'} {replay.source === 'live' ? 'computed live in your browser' : 'precomputed (validation run)'}</p>
+          {replay.outsideIndex && <p className="note">This mission predates the polar index (2026{'–'}2030), so no site ranking is run. The timeline shows the mission site only.</p>}
           {replay.endKind === 'anomaly' || replay.endKind === 'crash'
             ? <p className="note warn">Not a sunset end: {replay.endReason}. The {'Δ'} is not a prediction error.</p>
             : <p className="note">{replay.endReason}</p>}

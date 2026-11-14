@@ -91,9 +91,15 @@ function ResultsTab() {
           <span>{progress?.stage ?? 'Ranking'}{'…'}</span>
         </div>
       )}
+      {results && !ranking && results.coarse && (
+        <div className="coarse-banner" role="note">
+          <Badge tone="warn" title="Global search uses ~10 km cells, 6-hour steps and 1 km-baseline slopes">coarse {Math.round(results.resolutionM / 1000)} km screening</Badge>
+          <small>Not 20 m answers. Use these as leads: select one, then inspect its horizon and timeline, or search a polar region for 20 m results.</small>
+        </div>
+      )}
       {results && !ranking && (
-        <p className="summary">{results.passedFilters.toLocaleString()} of {results.considered.toLocaleString()} candidates pass your filters
-          {' · '}{results.resolutionM} m terrain{results.model === 'mock' ? ' (demo)' : ''}</p>
+        <p className="summary">{results.passedFilters.toLocaleString()} of {results.considered.toLocaleString()} {results.considered > results.results.length ? 'cells' : 'candidates'} pass your filters
+          {' · '}{results.coarse ? `~${Math.round(results.resolutionM / 1000)} km cells (coarse)` : results.resolutionM >= 1000 ? `${results.resolutionM / 1000} km grid, best ${results.results.length} refined at 15 min` : `${results.resolutionM} m terrain`}{results.model === 'mock' ? ' (demo)' : ''}</p>
       )}
       {results && results.results.length === 0 && !ranking && <p className="empty">No site passes all filters in this window. Relax a filter chip or move the window.</p>}
       <ol className="reslist">
@@ -107,7 +113,7 @@ function ResultsTab() {
                 <span className="rank">{r.rank}</span>
                 <div className="r-name">
                   <b>{t.name}</b>
-                  <small>{r.lat.toFixed(3)}{'°'}, {r.lon.toFixed(3)}{'°'}</small>
+                  <small>{r.lat.toFixed(3)}{'°'}, {r.lon.toFixed(3)}{'°'}{r.coarse ? <span className="coarse-tag" title="Found on the coarse 10 km global grid"> {'·'} coarse 10 km</span> : null}</small>
                 </div>
                 <CompareCheck id={id} />
               </div>

@@ -35,7 +35,7 @@ test("window with start >= end is dropped", () => {
 });
 
 test("bad region, bad op and non-object input", () => {
-  const r = validateToolArgs({ region: { type: "global" }, filters: [{ metric: "sun_hours", op: "=", value: 1 }] });
+  const r = validateToolArgs({ region: { type: "ellipsoid" }, filters: [{ metric: "sun_hours", op: "=", value: 1 }] });
   assert.equal(r.query.region, undefined);
   assert.equal(r.warnings.length, 2);
   assert.equal(validateToolArgs("nope").warnings.length, 1);

@@ -5,13 +5,19 @@ export const WINDOW_METRICS = [
   "sun_hours", "sun_frac", "longest_sun_h", "longest_dark_h", "earth_hours",
   "longest_earth_h", "longest_no_earth_h", "both_hours", "longest_both_h",
   "mean_sun_el_deg", "min_sun_el_deg", "sun_disc_frac_mean", "eclipse_hours",
+  "comms_hours", "longest_comms_h", "marginal_hours",
   "energy_wh", "battery_wh_needed",
 ] as const;
 export const STATIC_METRICS = ["lat", "lon", "elev_m", "slope_deg", "psr_dist_km", "fault_dist_km"] as const;
 export const METRICS: readonly string[] = [...WINDOW_METRICS, ...STATIC_METRICS];
 export const OPS = ["<", "<=", ">", ">="] as const;
 export const DIRS = ["max", "min"] as const;
-export const REGION_TYPES = ["polar", "circle", "sites"] as const;
+export const REGION_TYPES = ["polar", "circle", "sites", "bbox", "global"] as const;
+export const PANEL_KINDS = ["vertical_fixed", "vertical_tracking", "horizontal"] as const;
+/** Metrics that only exist when query.power is set. */
+export const POWER_METRICS = ["energy_wh", "battery_wh_needed"] as const;
+/** Metrics that do not exist on the coarse global grid (outside the south polar cap). */
+export const POLAR_ONLY_METRICS = ["psr_dist_km", "fault_dist_km"] as const;
 
 export interface ValidationResult {
   query: Record<string, unknown>;
@@ -79,6 +85,18 @@ export function validateToolArgs(raw: unknown): ValidationResult {
       } else {
         const l = Math.round((((lon + 180) % 360 + 360) % 360 - 180) * 1e6) / 1e6;
         query.region = { type: "circle", lat, lon: l, radius_km: Math.min(rad, 2000) };
+      }
+    } else if (t === "global") {
+      query.region = { type: "global" };
+    } else if (t === "bbox") {
+      const w = num(r.west), so = num(r.south), e = num(r.east), n = num(r.north);
+      if (w === null || so === null || e === null || n === null) warnings.push("region dropped: bbox needs numeric west, south, east, north");
+      else if (so < -90 || n > 90 || so >= n) warnings.push("region dropped: bbox needs -90 <= south < north <= 90");
+      else {
+        const wrap = (x: number) => Math.round((((x + 180) % 360 + 360) % 360 - 180) * 1e6) / 1e6;
+        // full-width boxes keep their meaning (wrapping would collapse 360 degrees to zero width)
+        if (e - w >= 360) query.region = { type: "bbox", west: -180, south: so, east: 180, north: n };
+        else query.region = { type: "bbox", west: wrap(w), south: so, east: wrap(e), north: n };
       }
     } else {
       const ids = Array.isArray(r.ids) ? r.ids.filter((x): x is string => typeof x === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(x)) : [];
@@ -173,6 +191,54 @@ export function validateToolArgs(raw: unknown): ValidationResult {
     const d = num(raw.min_separation_km);
     if (d === null || d < 0) warnings.push("min_separation_km dropped: must be a number >= 0");
     else query.min_separation_km = Math.min(d, 500);
+  }
+
+  // relay
+  if (raw.relay !== undefined && raw.relay !== null) {
+    if (typeof raw.relay === "boolean") query.relay = raw.relay;
+    else warnings.push("relay dropped: must be true or false");
+  }
+
+  // power panel
+  if (isObj(raw.power)) {
+    const p = raw.power;
+    const kind = typeof p.kind === "string" ? p.kind : "vertical_tracking";
+    const area = p.areaM2 === undefined ? 3 : num(p.areaM2);
+    const eff = p.efficiency === undefined ? 0.3 : num(p.efficiency);
+    const load = p.loadW === undefined ? 150 : num(p.loadW);
+    const dod = p.depthOfDischarge === undefined ? 0.8 : num(p.depthOfDischarge);
+    const bat = p.batteryWh === undefined || p.batteryWh === null ? undefined : num(p.batteryWh);
+    const az = p.azimuthDeg === undefined || p.azimuthDeg === null ? undefined : num(p.azimuthDeg);
+    if (!(PANEL_KINDS as readonly string[]).includes(kind)) warnings.push(`power dropped: unknown panel kind '${kind}'`);
+    else if (area === null || area <= 0 || area > 1000 || eff === null || eff <= 0 || eff > 1 || load === null || load < 0 || load > 1e6 ||
+      dod === null || dod <= 0 || dod > 1 || bat === null || (bat !== undefined && (bat < 0 || bat > 1e8)) || az === null) {
+      warnings.push("power dropped: need areaM2 in (0,1000], efficiency in (0,1], loadW >= 0, depthOfDischarge in (0,1], batteryWh >= 0");
+    } else {
+      const panel: Obj = { kind, areaM2: area, efficiency: eff, loadW: load, depthOfDischarge: dod };
+      if (bat !== undefined) panel.batteryWh = bat;
+      if (az !== undefined && kind === "vertical_fixed") panel.azimuthDeg = ((az % 360) + 360) % 360;
+      query.power = panel;
+    }
+  } else if (raw.power !== undefined && raw.power !== null) {
+    warnings.push("power dropped: not an object");
+  }
+
+  // power metrics need a panel: attach the default lander panel rather than silently dropping the chip
+  if (!query.power) {
+    const uses = [...(Array.isArray(query.filters) ? query.filters : []), ...(Array.isArray(query.objectives) ? query.objectives : [])]
+      .some((x) => (POWER_METRICS as readonly unknown[]).includes((x as Obj).metric));
+    if (uses) {
+      query.power = { kind: "vertical_tracking", areaM2: 3, efficiency: 0.3, loadW: 150, depthOfDischarge: 0.8, batteryWh: 2000 };
+      warnings.push("power metric used without a panel: assumed 3 m2 sun-tracking vertical panel, 0.3 efficiency, 150 W load, 2000 Wh battery");
+    }
+  }
+
+  // psr/fault distances exist only on the 20 m polar index
+  const reg = query.region as Obj | undefined;
+  const coarse = reg && (reg.type === "global" || (reg.type === "bbox" && (reg.north as number) > -85) || (reg.type === "polar" && (reg.max_lat as number) > -85) ||
+    (reg.type === "circle" && ((reg.lat as number) + (reg.radius_km as number) / 111.195 > -85 || (reg.lat as number) > -85)));
+  if (coarse && Array.isArray(query.filters) && query.filters.some((f) => (POLAR_ONLY_METRICS as readonly unknown[]).includes((f as Obj).metric))) {
+    warnings.push("psr_dist_km / fault_dist_km filters only work in the south polar cap (below -85 deg); in this region they will remove every result");
   }
 
   return { query, unparsed, warnings };

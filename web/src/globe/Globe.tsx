@@ -4,17 +4,19 @@ import {
   BillboardGraphics, BoundingSphere, Cartesian2, Cartesian3, Color, ConstantPositionProperty, CustomDataSource, DirectionalLight,
   Ellipsoid, Entity, GeographicTilingScheme, HeadingPitchRange, HorizontalOrigin, Math as CMath, NearFarScalar,
   ScreenSpaceEventHandler, ScreenSpaceEventType, SingleTileImageryProvider, UrlTemplateImageryProvider, VerticalOrigin, Viewer,
-  ImageryLayer, type ImageryProvider, Rectangle, HeightReference, ColorMaterialProperty,
+  ImageryLayer, type ImageryProvider, Rectangle, HeightReference, ColorMaterialProperty, DistanceDisplayCondition, LabelStyle,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { getEngine } from '../engine/client.ts';
 import { flyTo, select, useStore } from '../store.ts';
 import { createTerrainProvider } from './terrain.ts';
+import { installTraverseLayer } from './traverseLayer.ts';
 import { ShadowImageryProvider } from './shadowProvider.ts';
 import type { ShadowPatch } from '../engine/api.ts';
 import { makeMoonCanvas } from './moonTexture.ts';
 
 const MOON = Ellipsoid.MOON;
+const LOCAL_KM = 60;
 Ellipsoid.default = MOON;
 
 export const GROUP_COLORS: Record<string, string> = {
@@ -44,6 +46,17 @@ function numberedPin(n: number, selected: boolean): HTMLCanvasElement {
   g.font = '700 26px ui-sans-serif, system-ui, sans-serif';
   g.textAlign = 'center'; g.textBaseline = 'middle';
   g.fillText(String(n), 28, 29);
+  return c;
+}
+
+function ringCanvas(): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d')!;
+  g.beginPath(); g.arc(32, 32, 26, 0, 7);
+  g.lineWidth = 7; g.strokeStyle = 'rgba(16,20,28,0.85)'; g.stroke();
+  g.beginPath(); g.arc(32, 32, 26, 0, 7);
+  g.lineWidth = 4; g.strokeStyle = '#F5B700'; g.stroke();
   return c;
 }
 
@@ -105,6 +118,7 @@ export default function Globe() {
       skyAtmosphere: false, shadows: false,
     });
     viewerRef.current = viewer;
+    const disposeTraverse = installTraverseLayer(viewer);
     if (import.meta.env.DEV) (window as unknown as { __viewer: Viewer }).__viewer = viewer;
     const scene = viewer.scene;
     scene.globe.show = true;
@@ -205,30 +219,43 @@ export default function Globe() {
     ro.observe(host);
     setReady(true);
     return () => {
-      ro.disconnect(); handler.destroy(); viewer.destroy(); viewerRef.current = null; setReady(false);
+      ro.disconnect(); handler.destroy(); disposeTraverse(); viewer.destroy(); viewerRef.current = null; setReady(false);
     };
   }, []);
 
-  // ---- curated site pins -------------------------------------------------------------
+  // ---- curated site pins (catalog: small and quiet; ranked results below are the dominant markers) -----------
   useEffect(() => {
     const ds = dsRef.current.sites;
     const viewer = viewerRef.current;
     if (!ds || !viewer) return;
     ds.entities.removeAll();
     if (layers.sites) {
+      const selT = selected ? useStore.getState().targets[selected] : undefined;
+      const ranked = new Set((layers.results && results ? results.results : []).map((r) => r.id).filter(Boolean));
       for (const s of sites) {
+        if (ranked.has(s.id)) continue; // drawn as a numbered pin instead
         ds.entities.add({
           id: s.id, name: s.name, position: pos(s.lat, s.lon),
           point: {
-            pixelSize: 8, color: Color.fromCssColorString(GROUP_COLORS[s.group] ?? GROUP_COLORS.Other),
-            outlineColor: Color.BLACK.withAlpha(0.8), outlineWidth: 1.5,
-            heightReference: HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: 2e5, scaleByDistance: new NearFarScalar(2e5, 1.6, 2e7, 0.9),
+            pixelSize: 6, color: Color.fromCssColorString(GROUP_COLORS[s.group] ?? GROUP_COLORS.Other).withAlpha(0.85),
+            outlineColor: Color.BLACK.withAlpha(0.7), outlineWidth: 1,
+            heightReference: HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: 2e5,
+            scaleByDistance: new NearFarScalar(3e4, 1.5, 1.5e7, 0.5),
+            translucencyByDistance: new NearFarScalar(2e6, 1, 1.2e7, 0.45),
+          },
+          label: s.id === selected || (selT && Math.abs(selT.lat - s.lat) < 0.01 && Math.abs(selT.lon - s.lon) < 0.01) ? undefined : {
+            text: s.name, font: '600 12px ui-sans-serif, system-ui, sans-serif', style: LabelStyle.FILL_AND_OUTLINE,
+            fillColor: Color.WHITE, outlineColor: Color.fromCssColorString('#0b0f17'), outlineWidth: 3,
+            verticalOrigin: VerticalOrigin.BOTTOM, horizontalOrigin: HorizontalOrigin.LEFT, pixelOffset: new Cartesian2(8, -4),
+            heightReference: HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: 2e5,
+            distanceDisplayCondition: new DistanceDisplayCondition(0, 4e5),
+            translucencyByDistance: new NearFarScalar(1.5e5, 1, 4e5, 0),
           },
         });
       }
     }
     viewer.scene.requestRender();
-  }, [sites, layers.sites, ready]);
+  }, [sites, results, selected, layers.sites, layers.results, ready]);
 
   // ---- ranked result pins ---------------------------------------------------------------
   useEffect(() => {
@@ -239,11 +266,13 @@ export default function Globe() {
     if (layers.results && results) {
       for (const r of results.results) {
         const id = r.id ?? `r:${r.lat.toFixed(4)},${r.lon.toFixed(4)}`;
+        const sel = id === selected;
         ds.entities.add({
           id: `res:${id}`, name: `#${r.rank}`, position: pos(r.lat, r.lon),
           billboard: {
-            image: numberedPin(r.rank, id === selected), width: 30, height: 30, verticalOrigin: VerticalOrigin.CENTER, horizontalOrigin: HorizontalOrigin.CENTER,
-            heightReference: HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: 2e5, eyeOffset: new Cartesian3(0, 0, -400), scaleByDistance: new NearFarScalar(1e5, 1.3, 2e7, 0.85),
+            image: numberedPin(r.rank, sel), width: sel ? 36 : 32, height: sel ? 36 : 32, verticalOrigin: VerticalOrigin.CENTER, horizontalOrigin: HorizontalOrigin.CENTER,
+            heightReference: HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: 2e5, eyeOffset: new Cartesian3(0, 0, sel ? -900 : -400),
+            scaleByDistance: new NearFarScalar(3e4, 1.35, 1.2e7, 0.75),
           },
         });
       }
@@ -251,7 +280,7 @@ export default function Globe() {
     viewer.scene.requestRender();
   }, [results, layers.results, selected, ready]);
 
-  // selection ring
+  // selection ring + name: last data source, so it draws on top of every other pin
   useEffect(() => {
     const ds = dsRef.current.sel;
     const viewer = viewerRef.current;
@@ -261,7 +290,16 @@ export default function Globe() {
     if (t) {
       ds.entities.add({
         id: 'sel-ring', name: 'sel', position: pos(t.lat, t.lon),
-        point: { pixelSize: 22, color: Color.TRANSPARENT, outlineColor: Color.fromCssColorString('#F5B700'), outlineWidth: 3, heightReference: HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: 2e5 },
+        billboard: {
+          image: ringCanvas(), width: 40, height: 40, heightReference: HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: 2e5,
+          eyeOffset: new Cartesian3(0, 0, -1200), scaleByDistance: new NearFarScalar(3e4, 1.2, 1.2e7, 0.8),
+        },
+        label: {
+          text: `${t.rank ? `#${t.rank} ` : ''}${t.name}`, font: '700 13px ui-sans-serif, system-ui, sans-serif', style: LabelStyle.FILL_AND_OUTLINE,
+          fillColor: Color.fromCssColorString('#FFE08A'), outlineColor: Color.fromCssColorString('#0b0f17'), outlineWidth: 3,
+          verticalOrigin: VerticalOrigin.BOTTOM, pixelOffset: new Cartesian2(0, -26), heightReference: HeightReference.CLAMP_TO_GROUND,
+          disableDepthTestDistance: 2e5, distanceDisplayCondition: new DistanceDisplayCondition(0, 6e6),
+        },
       });
     }
     viewer.scene.requestRender();
@@ -404,29 +442,39 @@ export default function Globe() {
 
   // ---- terrain-true shadows (regional patch at the pole, local patch at the selected site) ------------
   const selTarget = selected ? targets[selected] : undefined;
+  const lastShadowRun = useRef(0);
+  const [shadowKm, setShadowKm] = useState(650);
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || !ready) return;
     const removeOld = () => { if (shadowLayer.current) { viewer.imageryLayers.remove(shadowLayer.current, true); shadowLayer.current = null; } viewer.scene.requestRender(); };
     if (!layers.shadows) { removeOld(); return; }
     const my = ++shadowToken.current;
+    // Throttled while scrubbing/playing (at most ~2 patches per second), immediate-ish on selection/regime change.
+    const delay = Math.max(120, 450 - (performance.now() - lastShadowRun.current));
     const timer = setTimeout(async () => {
       try {
+        lastShadowRun.current = performance.now();
         const local = regime === 'local';
         const cam = viewer.camera.positionCartographic;
         const lat = local ? (selTarget?.lat ?? CMath.toDegrees(cam.latitude)) : -90;
         const lon = local ? (selTarget?.lon ?? CMath.toDegrees(cam.longitude)) : 0;
-        const patch: ShadowPatch = await getEngine().shadowPatch(lat, lon, local ? 30 : 650, 1024, cursor);
+        // regional: 650 km at 1024 px; local: 60 km at 2048 px = 29 m/px (patch accuracy is good at 20-30 m/px)
+        const sizeKm = local ? LOCAL_KM : 650, px = local ? 2048 : 1024;
+        const t0 = performance.now();
+        const patch: ShadowPatch = await getEngine().shadowPatch(lat, lon, sizeKm, px, cursor);
         if (my !== shadowToken.current || viewer.isDestroyed()) return;
+        if (import.meta.env.DEV) console.info(`[shadows] ${sizeKm} km @ ${px}px in ${Math.round(performance.now() - t0)} ms`);
         const layer = new ImageryLayer(new ShadowImageryProvider(patch) as unknown as ImageryProvider, { alpha: 1 });
         viewer.imageryLayers.add(layer);
         const old = shadowLayer.current;
         shadowLayer.current = layer;
         setShadowMock(!!patch.mock);
+        setShadowKm(sizeKm);
         setTimeout(() => { if (old && !viewer.isDestroyed()) { viewer.imageryLayers.remove(old, true); viewer.scene.requestRender(); } }, 250);
         viewer.scene.requestRender();
       } catch (e) { console.warn('[shadows]', e); }
-    }, 120);
+    }, delay);
     return () => clearTimeout(timer);
   }, [layers.shadows, cursor, regime, selTarget?.lat, selTarget?.lon, ready]);
 
@@ -441,9 +489,21 @@ export default function Globe() {
     }
     const t = fly.id ? useStore.getState().targets[fly.id] : undefined;
     if (!t) return;
-    viewer.camera.flyToBoundingSphere(new BoundingSphere(pos(t.lat, t.lon), 5000), {
-      offset: new HeadingPitchRange(0, -CMath.PI_OVER_TWO * 0.8, 160000), duration: 1.6,
-    });
+    (async () => {
+      // Frame the local shadow patch: tilted ~28 km view, Sun off to the right so slopes are raking-lit,
+      // centred at the real terrain height so the camera never starts inside relief.
+      let h = 0, sunAz = 0;
+      try {
+        const d = 0.002;
+        const hs = await getEngine().sampleHeights(t.lon - d, t.lat - d, t.lon + d, t.lat + d, 2, 2);
+        h = Math.max(0, ...Array.from(hs).filter(Number.isFinite)) || 0;
+      } catch { /* flat */ }
+      try { sunAz = (await getEngine().sunEarthAt(t.lat, t.lon, useStore.getState().cursor)).sunAz; } catch { /* north */ }
+      if (viewer.isDestroyed() || tokenRef.current !== fly.nonce) return;
+      viewer.camera.flyToBoundingSphere(new BoundingSphere(pos(t.lat, t.lon, h), 3000), {
+        offset: new HeadingPitchRange(CMath.toRadians(sunAz - 90), CMath.toRadians(-30), 28000), duration: 2,
+      });
+    })();
   }, [fly]);
 
   const hv = hover ? targets[hover.id] : null;
@@ -456,7 +516,7 @@ export default function Globe() {
           <span>{hv.lat.toFixed(3)}{'°'}, {hv.lon.toFixed(3)}{'°'}{hv.group ? ` · ${hv.group}` : ''}</span>
         </div>
       )}
-      {layers.shadows && <div className={`shadow-flag ${shadowMock ? 'demo' : ''}`}>terrain-true shadows (LOLA){shadowMock ? ' \u00b7 demo patch' : ''} {'\u00b7'} {regime === 'local' ? '30 km' : '650 km'}{mode === 'mock' ? '' : ''}</div>}
+      {layers.shadows && <div className={`shadow-flag ${shadowMock ? 'demo' : ''}`}>terrain-true shadows (LOLA){shadowMock ? ' \u00b7 demo patch' : ''} {'\u00b7'} {shadowKm} km{mode === 'mock' ? '' : ''}</div>}
       <div className="globe-btns">
         <button className="btn sm" onClick={() => flyTo(null, true)}>South pole / global</button>
         <button className="btn sm" disabled={!selected} onClick={() => selected && flyTo(selected)}>Fly to selection</button>

@@ -266,3 +266,30 @@ select { max-width: 100%; }
 .prose ol, .prose ul { margin: 0; padding-left: 18px; color: #c7cfe0; display: grid; gap: 4px; }
 .mtable.valid td, .mtable.valid th { padding: 3px 8px 3px 0; } .mtable td.pendcell { text-align: left; color: var(--muted); font-family: var(--font); padding-left: 10px; }
 .mtable.diff { font-size: 11.5px; } .mtable.diff td { white-space: nowrap; padding-left: 6px; } .mtable.diff th { font-size: 11.5px; }
+
+/* ---- global search, comms, power, traverse ---- */
+.chip.warn { border-color: #8a6a2a; }
+.chip.warn .chip-main { color: var(--warn); }
+.chip.toggle { padding: 0; cursor: pointer; background: #121a2b; }
+.chip.toggle.on { border-color: var(--accent2); }
+.chip.toggle.on .chip-main { color: var(--accent2); }
+.chip.k-power { border-color: #7a6a1e; background: #1d1a0a; }
+.warnline { color: var(--warn); }
+.coarse-banner { display: grid; gap: 4px; border: 1px solid #6b5230; background: rgba(255,180,84,.07); border-radius: 8px; padding: 6px 8px; }
+.coarse-banner small { color: var(--muted); font-size: 11.5px; }
+.coarse-tag { color: var(--warn); font-family: var(--font); }
+.powercard, .traverse { display: grid; gap: 8px; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+.verdict { display: grid; gap: 2px; font-weight: 650; font-size: 13px; border-radius: 8px; padding: 7px 9px; border: 1px solid; }
+.verdict small { font-weight: 400; color: var(--muted); font-size: 11.5px; line-height: 1.4; }
+.verdict.yes { color: #3ddc97; border-color: #1f5a42; background: rgba(61,220,151,.07); }
+.verdict.no { color: #ff8a8a; border-color: #6a2e2e; background: rgba(255,106,106,.07); }
+.checks { display: grid; gap: 4px; align-content: end; }
+.btn.on { border-color: var(--accent2); color: var(--accent2); }
+.powercard, .traverse { grid-template-columns: minmax(0, 1fr); }
+.powercard .row, .traverse .row { flex-wrap: wrap; align-items: center; }
+.powercard select, .traverse select { min-width: 0; max-width: 100%; }
+.traverse .row select { flex: 1 1 140px; width: 0; }
+.powercard .ed, .traverse .ed { min-width: 0; }
+.powercard .grid4 > *, .traverse .grid4 > * { min-width: 0; }
+.traverse .coords span { display: block; margin-left: 0; }
+.traverse .mtable td, .powercard .mtable td { white-space: nowrap; }

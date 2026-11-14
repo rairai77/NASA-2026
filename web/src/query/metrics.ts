@@ -10,6 +10,10 @@ export interface MetricDef {
   rankable: boolean;
   defaultOp?: '<' | '<=' | '>' | '>=';
   defaultValue?: number;
+  /** only defined when query.power is set (power model) */
+  needsPower?: boolean;
+  /** only exists on the polar (20 m) index: always fails on the coarse global grid */
+  polarOnly?: boolean;
 }
 
 const M = (name: string, label: string, plain: string, unit: string, digits: number, kind: 'window' | 'static', extra: Partial<MetricDef> = {}): MetricDef =>
@@ -29,12 +33,15 @@ export const METRICS: MetricDef[] = [
   M('min_sun_el_deg', 'Min Sun elevation', 'Lowest Sun height in sky', '°', 1, 'window'),
   M('sun_disc_frac_mean', 'Sun disc visible', 'How much of the Sun is visible', '', 2, 'window', { defaultOp: '>=', defaultValue: 0.8 }),
   M('eclipse_hours', 'Eclipse hours', 'Hours Earth blocks the Sun', 'h', 1, 'window', { defaultOp: '<=', defaultValue: 0 }),
-  M('energy_wh', 'Energy (1 m² panel)', 'Solar energy collected', 'Wh', 0, 'window'),
-  M('battery_wh_needed', 'Battery needed', 'Battery size to survive the night', 'Wh', 0, 'window', { defaultOp: '<=', defaultValue: 5000 }),
+  M('comms_hours', 'Comms hours', 'Hours a Deep Space Network dish can hear the Moon and Earth is in view', 'h', 0, 'window', { defaultOp: '>=', defaultValue: 200 }),
+  M('longest_comms_h', 'Longest comms run', 'Longest unbroken radio contact', 'h', 0, 'window', { defaultOp: '>=', defaultValue: 48 }),
+  M('marginal_hours', 'Marginal-link hours', 'Hours Earth skims the skyline (weak, flickery link)', 'h', 0, 'window', { defaultOp: '<=', defaultValue: 24 }),
+  M('energy_wh', 'Energy (power model)', 'Solar energy collected by your panel', 'Wh', 0, 'window', { defaultOp: '>=', defaultValue: 10000, needsPower: true }),
+  M('battery_wh_needed', 'Battery needed', 'Battery size to survive the longest night', 'Wh', 0, 'window', { defaultOp: '<=', defaultValue: 5000, needsPower: true }),
   M('slope_deg', 'Slope', 'Steepness of ground', '°', 1, 'static', { defaultOp: '<=', defaultValue: 8 }),
   M('elev_m', 'Elevation', 'Height above lunar datum', 'm', 0, 'static'),
-  M('psr_dist_km', 'Distance to PSR', 'Distance to permanent shadow', 'km', 1, 'static', { defaultOp: '<=', defaultValue: 5 }),
-  M('fault_dist_km', 'Distance to fault scarp', 'Distance to nearest young fault', 'km', 1, 'static', { defaultOp: '>=', defaultValue: 5 }),
+  M('psr_dist_km', 'Distance to PSR', 'Distance to permanent shadow', 'km', 1, 'static', { defaultOp: '<=', defaultValue: 5, polarOnly: true }),
+  M('fault_dist_km', 'Distance to fault scarp', 'Distance to nearest young fault', 'km', 1, 'static', { defaultOp: '>=', defaultValue: 5, polarOnly: true }),
   M('lat', 'Latitude', 'Latitude', '°', 3, 'static', { rankable: false }),
   M('lon', 'Longitude', 'Longitude', '°', 3, 'static', { rankable: false }),
 ];

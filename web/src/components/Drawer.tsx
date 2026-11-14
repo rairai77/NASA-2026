@@ -1,9 +1,11 @@
 import { useMemo, useState } from 'react';
 import { countdowns, sampleAt } from '../lib/countdown.ts';
-import { fmtMetric, metricLabel, STATIC_METRICS, TABLE_METRICS } from '../query/metrics.ts';
+import { METRIC_BY_NAME, fmtMetric, metricLabel, STATIC_METRICS, TABLE_METRICS } from '../query/metrics.ts';
 import { flyTo, select, toggleCompare, useStore, windowOf } from '../store.ts';
 import { EllipsePanel } from './EllipsePanel.tsx';
 import { HorizonPlot } from './HorizonPlot.tsx';
+import { PowerPanel } from './PowerPanel.tsx';
+import { TraversePanel } from './TraversePanel.tsx';
 import { Badge, Why } from './ui.tsx';
 
 export function Drawer() {
@@ -15,6 +17,7 @@ export function Drawer() {
   const edu = useStore((s) => s.educator);
   const model = useStore((s) => s.results?.model);
   const mode = useStore((s) => s.info?.mode);
+  const info = useStore((s) => s.info);
   const inCompare = useStore((s) => (s.selected ? s.compare.includes(s.selected) : false));
   const [pmode, setPmode] = useState<'polar' | 'panorama'>('polar');
   const [zoom, setZoom] = useState(true);
@@ -38,6 +41,7 @@ export function Drawer() {
       </header>
       <div className="badges">
         {t.representative && <Badge tone="warn" title="One point stands in for a whole candidate region">representative point</Badge>}
+        {t.coarse && <Badge tone="warn" title="This cell was found on the global 10 km screening grid (coarse terrain, 6-hour steps). The timeline and metrics below are recomputed at 15 minutes with the local horizon, but treat the site as a lead, not a landing-site answer.">coarse 10 km screening</Badge>}
         <Badge title="Horizon sampling resolution">resolution {d?.horizon?.resolutionM ?? 20} m</Badge>
         <Badge tone={demo ? 'demo' : ''} title={demo ? 'Synthetic demo terrain, not LOLA' : 'LOLA terrain model'}>{demo ? 'demo terrain model' : 'terrain model'}</Badge>
         {d?.horizon && d.horizon.missingSamples > 0 && <Badge tone="warn">gaps in terrain</Badge>}
@@ -77,16 +81,19 @@ export function Drawer() {
       </div>
       {ellOpen && <EllipsePanel target={t} />}
 
+      <PowerPanel target={t} />
+      <TraversePanel target={t} />
+
       <section>
         <h3>Metrics for window <small>{query.window.start.slice(0, 10)} {'→'} {query.window.end.slice(0, 10)}</small></h3>
         <table className="mtable">
           <tbody>
-            {TABLE_METRICS.map((k) => <tr key={k}><th>{metricLabel(k, edu)}</th><td>{fmtMetric(k, m[k])}</td></tr>)}
+            {TABLE_METRICS.filter((k) => !METRIC_BY_NAME[k]?.needsPower).map((k) => <tr key={k}><th>{metricLabel(k, edu)}</th><td>{fmtMetric(k, m[k])}</td></tr>)}
             <tr className="sep"><th colSpan={2}>Terrain</th></tr>
             {STATIC_METRICS.map((k) => <tr key={k}><th>{metricLabel(k, edu)}</th><td>{fmtMetric(k, m[k])}</td></tr>)}
           </tbody>
         </table>
-        <p className="hint">Sun up = at least half the disc above the skyline. {edu && 'Eclipses are Earth passing in front of the Sun.'}<Why id="eclipse" /><Why id="both-up" /></p>
+        <p className="hint">{info?.dsn === false ? 'DSN table not loaded: comms hours count Earth in view only. ' : ''}{query.relay ? 'Relay orbiter assumed: comms cover the whole window. ' : 'Comms = Earth in view and a Deep Space Network dish can see the Moon. '}Sun up = at least half the disc above the skyline. {edu && 'Eclipses are Earth passing in front of the Sun.'}<Why id="eclipse" /><Why id="both-up" /></p>
       </section>
     </aside>
   );

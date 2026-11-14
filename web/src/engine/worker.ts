@@ -4,8 +4,9 @@
 import * as Comlink from 'comlink';
 import type {
   CuratedSite, EllipseArgs, EllipseResult, EngineApi, HorizonResult, InitInfo, Mission, Progress,
-  Query, RankResult, ShadowPatch, Site, SunEarth, VisResult,
+  Panel, PowerResult, Query, RankResult, ShadowPatch, Site, SunEarth, TraverseLimits, TraverseResult, VisResult,
 } from './api.ts';
+import { regionIsCoarse } from '../query/query.ts';
 import { loadFaults, loadMissions, loadSites, fetchJsonMaybe } from './catalog.ts';
 import { MockEngine, parseWhen } from './mock.ts';
 
@@ -22,13 +23,22 @@ interface WasmEngine {
   requiredTilesArea(lat: number, lon: number, radiusKm: number, levelId?: string): string[];
   requiredTilesRect(west: number, south: number, east: number, north: number, w: number, h: number): string[];
   horizon(lat: number, lon: number, heightM: number, nAz: number): HorizonResult;
-  visibility(lat: number, lon: number, heightM: number, elevDeg: Float32Array, tStart: number, tEnd: number, stepS: number): VisResult;
+  visibility(lat: number, lon: number, heightM: number, elevDeg: Float32Array, tStart: number, tEnd: number, stepS: number, opts?: { relay?: boolean }): VisResult;
+  loadDsn(metaJson: string, bytes: Uint8Array): void;
+  loadGlobalManifest(json: string): void;
+  loadGlobalStatic(raw: Uint8Array): void;
+  addGlobalMonth(month: string, raw: Uint8Array): void;
+  addGlobalHorizonBand(band: number, raw: Uint8Array): void;
+  globalMonthsNeeded(tStart: number, tEnd: number): string[];
+  power(lat: number, lon: number, heightM: number, elevDeg: Float32Array, tStart: number, tEnd: number, stepS: number, panel: Panel): PowerResult;
+  requiredTilesTraverse(start: { lat: number; lon: number }, goal: { lat: number; lon: number }, cellM?: number | null): string[];
+  traverse(start: { lat: number; lon: number }, goal: { lat: number; lon: number }, tStart: number, limits: TraverseLimits, cellM?: number | null): TraverseResult;
   loadIndexManifest(json: string): void;
   loadIndexStatic(raw: Uint8Array): void;
   addIndexMonth(month: string, raw: Uint8Array): void;
   addHorizonBand(band: number, raw: Uint8Array): void;
   indexMonthsNeeded(tStart: number, tEnd: number): string[];
-  rankCoarse(query: Query): { candidates: unknown[]; bandsNeeded: number[]; stats?: unknown };
+  rankCoarse(query: Query): { candidates: unknown[]; bandsNeeded: number[]; stats?: { considered?: number; passedFilters?: number } };
   rankRefine(query: Query, candidates: unknown[]): RankResult;
   rankPoints(query: Query, points: { id: string; lat: number; lon: number; elevDeg: Float32Array }[]): RankResult;
   ellipse(lat: number, lon: number, a: number, b: number, rot: number, n: number, h: number, tS: number, tE: number, stepS: number): EllipseResult;
@@ -152,6 +162,8 @@ class RealEngine implements EngineApi {
   private terrain: TerrainManifest | null = null;
   private index: IndexManifest | null = null;
   private indexReady?: Promise<boolean>;
+  private globalReady?: Promise<IndexManifest | null>;
+  private dsnLoaded = false;
   private mock = new MockEngine();
   private notes: string[] = [];
   private curatedP?: Promise<Record<string, CuratedSite>>;
@@ -181,11 +193,18 @@ class RealEngine implements EngineApi {
       this.eng.loadTerrainManifest(new TextDecoder().decode(tm));
     } else this.notes.push('terrain manifest missing: horizons use demo terrain');
     const meta = JSON.parse(new TextDecoder().decode(ephemMeta));
+    // real comms: DSN Moon-elevation table on the ephemeris grid (1.7 MB)
+    try {
+      const dm = await getBytes(`${baseUrl}data/dsn/dsn.json`);
+      const db = await getBytes(`${baseUrl}data/dsn/dsn.i16`);
+      if (dm && db) { this.eng.loadDsn(new TextDecoder().decode(dm), db); this.dsnLoaded = true; }
+      else this.notes.push('DSN table missing: comms metrics assume Earth in view only');
+    } catch (e) { this.notes.push(`DSN load failed: ${(e as Error).message}`); }
     await this.mock.init(baseUrl);
     return {
       threads: self.navigator.hardwareConcurrency ?? 1,
       crossOriginIsolated: self.crossOriginIsolated === true,
-      dataVersion: `${meta.start_utc ?? '?'}..${meta.end_utc ?? '?'}`, mode: 'wasm', notes: this.notes,
+      dataVersion: `${meta.start_utc ?? '?'}..${meta.end_utc ?? '?'}`, mode: 'wasm', dsn: this.dsnLoaded, notes: this.notes,
     };
   }
 
@@ -234,10 +253,21 @@ class RealEngine implements EngineApi {
     return this.eng.horizon(lat, lon, heightM, 720);
   }
 
-  async visibility(lat: number, lon: number, tStart: number, tEnd: number, opts?: { heightM?: number; stepS?: number; elevDeg?: Float32Array }): Promise<VisResult> {
+  async visibility(lat: number, lon: number, tStart: number, tEnd: number, opts?: { heightM?: number; stepS?: number; elevDeg?: Float32Array; relay?: boolean }): Promise<VisResult> {
     const h = opts?.heightM ?? 2;
     const elev = opts?.elevDeg ?? (await this.horizon(lat, lon, h)).elevDeg;
-    return this.eng.visibility(lat, lon, h, elev, tStart, tEnd, opts?.stepS ?? 900);
+    return this.eng.visibility(lat, lon, h, elev, tStart, tEnd, opts?.stepS ?? 900, { relay: opts?.relay === true });
+  }
+
+  async power(lat: number, lon: number, tStart: number, tEnd: number, panel: Panel, opts?: { heightM?: number; stepS?: number; elevDeg?: Float32Array }): Promise<PowerResult> {
+    const h = opts?.heightM ?? 2;
+    const elev = opts?.elevDeg ?? (await this.horizon(lat, lon, h)).elevDeg;
+    return this.eng.power(lat, lon, h, elev, tStart, tEnd, opts?.stepS ?? 900, panel);
+  }
+
+  async traverse(start: { lat: number; lon: number }, goal: { lat: number; lon: number }, tStart: number, limits: TraverseLimits, cellM?: number): Promise<TraverseResult> {
+    await this.ensureTiles(this.eng.requiredTilesTraverse(start, goal, cellM ?? null));
+    return this.eng.traverse(start, goal, tStart, limits, cellM ?? null);
   }
 
   async compare(points: { id: string; lat: number; lon: number }[], tStart: number, tEnd: number) {
@@ -261,6 +291,51 @@ class RealEngine implements EngineApi {
     })());
   }
 
+  /** Coarse global index (~10 km cells): loaded lazily, only when a query's region needs it. */
+  private ensureGlobal(): Promise<IndexManifest | null> {
+    return (this.globalReady ??= (async () => {
+      const m = await getBytes(`${this.base}data/global/manifest.json`);
+      if (!m) return null;
+      const st = JSON.parse(new TextDecoder().decode(m)) as IndexManifest;
+      const stat = await getBytes(`${this.base}data/${st.static.file}`);
+      if (!stat) return null;
+      this.eng.loadGlobalManifest(new TextDecoder().decode(m));
+      this.eng.loadGlobalStatic(stat);
+      return st;
+    })().then((r) => { if (!r) this.globalReady = undefined; return r; }));
+  }
+
+  private async rankGlobal(q: Query, tS: number, tE: number, onProgress?: (p: Progress) => void): Promise<RankResult> {
+    onProgress?.({ stage: 'Loading global index', done: 0, total: 1 });
+    const gi = await this.ensureGlobal();
+    if (!gi) throw new Error('global index (data/global) is not available');
+    const months = this.eng.globalMonthsNeeded(tS, tE);
+    let done = 0;
+    await mapLimit(months, 8, async (mo) => {
+      const entry = gi.months.find((x) => x.month === mo);
+      if (!entry) return;
+      const raw = await getBytes(`${this.base}data/${entry.file}`);
+      if (raw) this.eng.addGlobalMonth(mo, raw);
+      onProgress?.({ stage: 'Loading global months', done: ++done, total: months.length });
+    });
+    onProgress?.({ stage: 'Coarse screening (10 km)', done: 0, total: 1 });
+    const coarse = this.eng.rankCoarse(q);
+    let bd = 0;
+    await mapLimit(coarse.bandsNeeded, 8, async (b) => {
+      const raw = await getBytes(`${this.base}data/${gi.horizons.bands[b]}`);
+      if (raw) this.eng.addGlobalHorizonBand(b, raw);
+      onProgress?.({ stage: 'Loading global horizons', done: ++bd, total: coarse.bandsNeeded.length });
+    });
+    onProgress?.({ stage: 'Refining at 15 min', done: 0, total: 1 });
+    const res = this.eng.rankRefine(q, coarse.candidates);
+    // report the whole-region screening counts, not the refined shortlist size
+    if (coarse.stats?.considered != null) { res.considered = coarse.stats.considered; res.passedFilters = coarse.stats.passedFilters ?? res.passedFilters; }
+    res.coarse = true;
+    for (const e of res.results) e.coarse = true;
+    onProgress?.({ stage: 'Done', done: 1, total: 1 });
+    return res;
+  }
+
   async rank(q: Query, onProgress?: (p: Progress) => void): Promise<RankResult> {
     const tS = parseWhen(q.window.start), tE = parseWhen(q.window.end);
     if (q.region.type === 'sites') {
@@ -280,6 +355,7 @@ class RealEngine implements EngineApi {
       r.results.forEach((e) => { e.id = pts.find((p) => Math.abs(p.lat - e.lat) < 1e-6 && Math.abs(p.lon - e.lon) < 1e-6)?.id; });
       return r;
     }
+    if (regionIsCoarse(q.region)) return this.rankGlobal(q, tS, tE, onProgress);
     if (!(await this.ensureIndex())) return this.mock.rank(q, onProgress);
     const idx = this.index!;
     const months = this.eng.indexMonthsNeeded(tS, tE);
@@ -301,6 +377,8 @@ class RealEngine implements EngineApi {
     });
     onProgress?.({ stage: 'Refining at 15 min', done: 0, total: 1 });
     const res = this.eng.rankRefine(q, coarse.candidates);
+    // report the whole-region screening counts, not the refined shortlist size
+    if (coarse.stats?.considered != null) { res.considered = coarse.stats.considered; res.passedFilters = coarse.stats.passedFilters ?? res.passedFilters; }
     onProgress?.({ stage: 'Done', done: 1, total: 1 });
     return res;
   }
@@ -366,6 +444,8 @@ const api: EngineApi = {
   sunEarthAt: (la, lo, t) => impl.sunEarthAt(la, lo, t),
   faults: () => impl.faults(),
   shadowPatch: (la, lo, s, px, t) => impl.shadowPatch(la, lo, s, px, t),
+  power: (la, lo, a, b, p, o) => impl.power(la, lo, a, b, p, o),
+  traverse: (s, g, t, l, c) => impl.traverse(s, g, t, l, c),
 };
 
 Comlink.expose(api);

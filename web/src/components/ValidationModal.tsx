@@ -1,8 +1,6 @@
-import { HEADLINE, HORIZONS_NOTE, HORIZONS_ROWS, LIMITS, METHODS, PENDING, TERRAIN_NOTE } from '../lib/validationText.ts';
+import { HEADLINE, HORIZONS_NOTE, HORIZONS_ROWS, LIMITS, METHODS, NOT_YET, REPLAY_NOTE, REPLAY_ROWS, RESULTS, TERRAIN_NOTE } from '../lib/validationText.ts';
 import { useStore } from '../store.ts';
 import { useEscape } from './ui.tsx';
-
-const Pending = () => <span className="pending">pending</span>;
 
 export function ValidationModal() {
   const open = useStore((s) => s.validationOpen);
@@ -19,16 +17,20 @@ export function ValidationModal() {
           {info?.mode === 'mock' && <p className="notice">This build is running on synthetic demo data; the numbers on screen are not real.</p>}
           <h3>Methods</h3>
           <ol>{METHODS.map((m) => <li key={m.h}><b>{m.h}.</b> {m.t}</li>)}</ol>
-          <h3>1. Sun and Earth vs JPL Horizons (done)</h3>
+          <h3>1. Sun and Earth vs JPL Horizons </h3>
           <table className="mtable valid"><thead><tr><th>Site</th><th>Body</th><th>max |{'Δ'}az{'·'}cos el| ({'°'})</th><th>max |{'Δ'}el| ({'°'})</th></tr></thead>
             <tbody>{HORIZONS_ROWS.map((r, i) => <tr key={i}><th>{r[0]}</th><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td></tr>)}</tbody></table>
           <p className="hint">{HORIZONS_NOTE}</p>
-          <h3>2. Terrain spot checks (done, internal consistency)</h3>
+          <h3>2. Terrain spot checks (internal consistency)</h3>
           <p className="hint">{TERRAIN_NOTE}</p>
-          <h3>3. Mission replay</h3>
-          <p>Open the <b>Replay</b> tab: each mission is replayed from landing and our predicted sunset is compared with the reported end of operations, live. <Pending /> for the summary table.</p>
-          <h3>4. Pending checks <Pending /></h3>
-          <table className="mtable"><tbody>{PENDING.map(([a, b], i) => <tr key={i}><th>{a}</th><td className="pendcell">{b} <Pending /></td></tr>)}</tbody></table>
+          <h3>3. Engine, PGDA and other checks</h3>
+          <table className="mtable valid"><tbody>{RESULTS.map((r) => <tr key={r.h}><th>{r.h}</th><td>{r.t} <span className="hint">[{r.src}]</span></td></tr>)}</tbody></table>
+          <h3>4. Mission replay</h3>
+          <table className="mtable valid"><thead><tr><th>Mission</th><th>{'Δ'}</th><th>Context</th></tr></thead>
+            <tbody>{REPLAY_ROWS.map((r) => <tr key={r[0]}><th>{r[0]}</th><td>{r[1]}</td><td>{r[2]}</td></tr>)}</tbody></table>
+          <p className="hint">{REPLAY_NOTE} Open the <b>Replay</b> tab to run them live.</p>
+          <h3>Not yet checked</h3>
+          <ul>{NOT_YET.map((n, i) => <li key={i}>{n}</li>)}</ul>
           <h3>Limitations and assumptions</h3>
           <ul>{LIMITS.map((l, i) => <li key={i}>{l}</li>)}</ul>
           <h3>Current engine</h3>

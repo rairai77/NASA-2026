@@ -1,10 +1,11 @@
 import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
-import type { CuratedSite, HorizonResult, InitInfo, Mission, Progress, Query, RankResult, Site, VisResult } from './engine/api.ts';
+import type { CuratedSite, HorizonResult, InitInfo, Mission, Panel, PowerResult, Progress, Query, RankResult, Site, TraverseLimits, TraverseResult, VisResult } from './engine/api.ts';
 import { getEngine, rankWithProgress } from './engine/client.ts';
 import { DAY, clamp, parseWhen, toDay } from './lib/time.ts';
 import { decodeState, type ShareState, type TargetStub } from './lib/share.ts';
-import { addDays, defaultQuery, mergeQuery } from './query/query.ts';
+import { METRIC_BY_NAME } from './query/metrics.ts';
+import { DEFAULT_PANEL, addDays, defaultQuery, mergeQuery } from './query/query.ts';
 
 export interface Target {
   id: string;
@@ -16,6 +17,8 @@ export interface Target {
   rank?: number;
   representative?: boolean;
   metrics?: Record<string, number | undefined>;
+  /** ranked on the coarse ~10 km global grid */
+  coarse?: boolean;
 }
 export interface TargetData { horizon?: HorizonResult; vis?: VisResult; key?: string; loading?: boolean; error?: string }
 
@@ -35,13 +38,29 @@ export interface LayerState { on: boolean; opacity: number }
 export interface Marker { t: number; label: string; kind: 'landing' | 'pred' | 'end' }
 export interface ReplayInfo {
   id: string; name: string; landed: number; predSunset: number | null; reportedEnd: number | null; deltaH: number | null;
-  endKind: string; endReason: string; source: 'precomputed' | 'live';
+  endKind: string; endReason: string; source: 'precomputed' | 'live'; outsideIndex?: boolean;
 }
 export interface Scenario {
   label: 'A' | 'B'; query: Query; target: Target; vis: VisResult; metrics: Record<string, number | undefined>; note: string;
 }
 
+export interface TraverseState {
+  goal: { lat: number; lon: number; name?: string } | null;
+  /** waiting for a click on the globe to choose the goal */
+  picking: boolean;
+  limits: TraverseLimits;
+  busy: boolean;
+  result: TraverseResult | null;
+  /** target id the result was planned from */
+  startId: string | null;
+  error: string | null;
+}
+export const DEFAULT_LIMITS: TraverseLimits = { maxSlopeDeg: 20, speedMps: 0.05, requireSun: true, requireEarth: false, maxHours: 72 };
+
 interface State {
+  /** lander power-model panel edited in the drawer (query.power carries it into the search when set) */
+  panel: Panel;
+  traverse: TraverseState;
   info: InitInfo | null;
   sites: Site[];
   missions: Mission[];
@@ -98,6 +117,8 @@ const q0 = restored?.q ? mergeQuery(defaultQuery(today), restored.q) : defaultQu
 const [w0, w1] = window_(q0);
 
 export const useStore = create<State>(() => ({
+  panel: q0.power ?? { ...DEFAULT_PANEL },
+  traverse: { goal: null, picking: false, limits: { ...DEFAULT_LIMITS }, busy: false, result: null, startId: null, error: null },
   info: null, sites: [], missions: [], curated: {}, targets: {},
   query: q0, unparsed: [], warnings: [], parsing: false, results: null, ranking: false, progress: null,
   selected: null, compare: [], data: {},
@@ -141,9 +162,21 @@ export function stubOf(t: Target): TargetStub { return { id: t.id, lat: t.lat, l
 export function resultId(lat: number, lon: number) { return `r:${lat.toFixed(4)},${lon.toFixed(4)}`; }
 
 export function setQuery(q: Query, rank = true) {
+  // power metrics only exist when a panel is attached to the query
+  if (!q.power && [...q.filters.map((f) => f.metric), ...q.objectives.map((o) => o.metric)].some((m) => METRIC_BY_NAME[m]?.needsPower)) {
+    q = { ...q, power: { ...get().panel } };
+  }
   const [a, b] = window_(q);
-  set((s) => ({ query: q, view: [a, b], cursor: clamp(s.cursor, a, b) }));
+  const prev = get().query;
+  set((s) => ({ query: q, view: [a, b], cursor: clamp(s.cursor, a, b), ...(q.power && !prev.power ? { panel: q.power } : {}) }));
+  if (!!prev.relay !== !!q.relay) setTimeout(refreshData, 0);
   if (rank) scheduleRank();
+}
+
+/** Edit the lander panel; when it is attached to the query the search re-ranks with it. */
+export function setPanel(p: Panel) {
+  set({ panel: p });
+  if (get().query.power) patchQuery({ power: p });
 }
 export function patchQuery(p: Partial<Query>, rank = true) {
   if (get().markers.length) set({ markers: [], replay: null, playUntil: null });
@@ -162,6 +195,8 @@ export function keepSelection() { keepRestoredSelection = true; }
 export async function runRank() {
   const seq = ++rankSeq;
   const q = get().query;
+  // Mission replay of a window outside the polar index months: nothing to rank, show the mission site only.
+  if (get().replay && outsideIndex(...window_(q))) { set({ ranking: false, progress: null }); return; }
   set({ ranking: true, progress: { stage: 'Starting', done: 0, total: 1 } });
   try {
     const res = await rankWithProgress(q, (p) => { if (seq === rankSeq) set({ progress: p }); });
@@ -170,7 +205,7 @@ export async function runRank() {
       const id = r.id ?? resultId(r.lat, r.lon);
       const site = r.id ? get().targets[r.id] : undefined;
       return {
-        id, kind: site ? 'site' : 'result', rank: r.rank, lat: r.lat, lon: r.lon, metrics: r.metrics,
+        id, kind: site ? 'site' : 'result', rank: r.rank, lat: r.lat, lon: r.lon, metrics: r.metrics, coarse: r.coarse === true || res.coarse === true,
         name: site?.name ?? `${r.lat.toFixed(2)}°, ${r.lon.toFixed(2)}°`,
         group: site?.group, representative: site?.representative,
       };
@@ -246,7 +281,7 @@ export async function refreshData() {
   for (const id of activeIds(s)) {
     const t = s.targets[id];
     if (!t) continue;
-    const key = `${t0}|${t1}|${step}|${s.query.height_m}`;
+    const key = `${t0}|${t1}|${step}|${s.query.height_m}|${s.query.relay ? 'R' : ''}`;
     if (s.data[id]?.key === key || inflight.get(id) === key) continue;
     inflight.set(id, key);
     set((st) => ({ data: { ...st.data, [id]: { ...st.data[id], loading: true } } }));
@@ -259,7 +294,7 @@ export async function refreshData() {
         } else horizon = await eng.horizon(t.lat, t.lon, s.query.height_m);
         set((st) => ({ data: { ...st.data, [id]: { ...st.data[id], horizon } } }));
       }
-      const vis = await eng.visibility(t.lat, t.lon, t0, t1, { stepS: step, heightM: s.query.height_m, elevDeg: horizon.elevDeg });
+      const vis = await eng.visibility(t.lat, t.lon, t0, t1, { stepS: step, heightM: s.query.height_m, elevDeg: horizon.elevDeg, relay: s.query.relay === true });
       if (inflight.get(id) === key) set((st) => ({ data: { ...st.data, [id]: { horizon, vis, key, loading: false } } }));
     } catch (e) {
       console.error(e);
@@ -319,6 +354,9 @@ export function setLayerState(id: string, p: Partial<LayerState>) {
 
 // ---------------------------------------------------------------------------------------
 // Mission replay
+/** The polar index covers 2026-01..2030-12 (UTC). */
+export const INDEX_RANGE: [number, number] = [Date.UTC(2026, 0, 1) / 1000, Date.UTC(2031, 0, 1) / 1000];
+export function outsideIndex(a: number, b: number) { return b <= INDEX_RANGE[0] || a >= INDEX_RANGE[1]; }
 interface MissionPred { predicted_sunset_utc?: string | null; sunset_minus_end_h?: number | null }
 let predP: Promise<Record<string, MissionPred> | null> | undefined;
 function loadPred() {
@@ -352,7 +390,7 @@ export async function startReplay(mid: string) {
   const [a, b] = window_(q);
   set({
     query: q, view: [a, b], selected: tid, compare: [], markers, leftTab: 'replay',
-    replay: { id: mid, name: m.name, landed, predSunset, reportedEnd: end, deltaH: predSunset && end ? (predSunset - end) / 3600 : null, endKind: kind, endReason: m.end_reason, source },
+    replay: { id: mid, name: m.name, landed, predSunset, reportedEnd: end, deltaH: predSunset && end ? (predSunset - end) / 3600 : null, endKind: kind, endReason: m.end_reason, source, outsideIndex: outsideIndex(a, b) },
     cursor: landed, playUntil: predSunset, speed: DAY, playing: true,
   });
   flyTo(tid);
@@ -362,7 +400,7 @@ export async function startReplay(mid: string) {
 // Scenarios A/B and launch slip
 export function dataKey(q = get().query) {
   const [t0, t1] = window_(q);
-  return `${t0}|${t1}|${seriesStep(q)}|${q.height_m}`;
+  return `${t0}|${t1}|${seriesStep(q)}|${q.height_m}|${q.relay ? 'R' : ''}`;
 }
 
 export function saveScenario(which: 'A' | 'B'): boolean {
@@ -401,3 +439,34 @@ export function applyNasaScreening() {
   patchQuery({ filters, region: { type: 'polar', min_lat: -90, max_lat: -84 } });
   toast('NASA Artemis screening (approx.): slope ≤ 10°, Earth ≥ 25% and Sun ≥ 5% of the window, within 6° of the pole.');
 }
+
+// ---------------------------------------------------------------------------------------
+// Traverse planner
+export function setTraverse(p: Partial<TraverseState>) { set((s) => ({ traverse: { ...s.traverse, ...p } })); }
+export function clearTraverse() { setTraverse({ goal: null, picking: false, result: null, startId: null, error: null, busy: false }); }
+
+let traverseSeq = 0;
+export async function runTraverse() {
+  const s = get();
+  const start = s.selected ? s.targets[s.selected] : undefined;
+  const goal = s.traverse.goal;
+  if (!start || !goal) return;
+  const seq = ++traverseSeq;
+  setTraverse({ busy: true, error: null, result: null, picking: false });
+  try {
+    const [t0] = window_(s.query);
+    const t = Math.max(t0, Math.min(s.cursor, window_(s.query)[1]));
+    const r = await getEngine().traverse({ lat: start.lat, lon: start.lon }, { lat: goal.lat, lon: goal.lon }, t, s.traverse.limits);
+    if (seq !== traverseSeq) return;
+    if (!r) setTraverse({ busy: false, error: 'The traverse planner needs the real engine (not available in demo mode).' });
+    else setTraverse({ busy: false, result: r, startId: start.id });
+  } catch (e) {
+    if (seq !== traverseSeq) return;
+    setTraverse({ busy: false, error: String((e as Error).message ?? e) });
+  }
+}
+// a traverse belongs to the site it was planned from
+useStore.subscribe((s, p) => {
+  if (s.selected !== p.selected && (s.traverse.result || s.traverse.goal) && !s.traverse.picking && s.traverse.startId !== s.selected) clearTraverse();
+});
+export type { PowerResult };

@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import type { Query } from '../engine/api.ts';
-import { describeQuery, describeRegion } from '../query/query.ts';
-import { metricLabel, fmtMetric } from '../query/metrics.ts';
+import { describeQuery, describeRegion, regionIsCoarse } from '../query/query.ts';
+import { metricLabel, fmtMetric, METRIC_BY_NAME } from '../query/metrics.ts';
 import { parseText, patchQuery, useStore } from '../store.ts';
 import { FilterEditor, ObjectiveEditor, RegionEditor, WindowEditor, newFilter, newObjective } from './editors.tsx';
 import { NumInput, Popover, useEscape } from './ui.tsx';
+import { PanelFields, panelSummary } from './PowerPanel.tsx';
+import { setPanel } from '../store.ts';
 
 export const EXAMPLES = [
   'Our CLPS launch slipped from March to June 2028 — best south pole sites with at least 6 days of continuous sun and Earth',
@@ -13,12 +15,12 @@ export const EXAMPLES = [
 ];
 const EXAMPLE_LABELS = ['CLPS slipped to June 2028', 'Flattest near Shackleton, short night', 'Apollo 11 vs Malapert, Dec 2026'];
 
-function ChipShell({ kind, text, children, onRemove, extra, draggable, dragProps }: {
-  kind: string; text: string; children: React.ReactNode; onRemove?: () => void; extra?: React.ReactNode; draggable?: boolean; dragProps?: React.HTMLAttributes<HTMLSpanElement>;
+function ChipShell({ kind, text, children, onRemove, extra, draggable, dragProps, warn }: {
+  warn?: string; kind: string; text: string; children: React.ReactNode; onRemove?: () => void; extra?: React.ReactNode; draggable?: boolean; dragProps?: React.HTMLAttributes<HTMLSpanElement>;
 }) {
   return (
     <Popover className="chipwrap" trigger={(open, toggle) => (
-      <span className={`chip k-${kind} ${open ? 'open' : ''}`} draggable={draggable} {...dragProps}>
+      <span className={`chip k-${kind} ${open ? 'open' : ''} ${warn ? 'warn' : ''}`} title={warn} draggable={draggable} {...dragProps}>
         {extra}
         <button className="chip-main" onClick={toggle} aria-expanded={open}>{text}</button>
         {onRemove && <button className="chip-x" aria-label="Remove" onClick={onRemove}>{'×'}</button>}
@@ -36,17 +38,29 @@ export function Chips() {
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const chips = describeQuery(q, edu);
   const txt = (key: string) => chips.find((c) => c.key === key)!.text;
+  const coarse = regionIsCoarse(q.region);
   const setObj = (objectives: Query['objectives']) => patchQuery({ objectives, weights: q.mode === 'weighted' ? objectives.map((_, i) => q.weights?.[i] ?? 1) : q.weights });
 
   return (
     <div className="chips" aria-label="Query chips">
       <ChipShell kind="window" text={`\u{1F4C5} ${txt('window')}`}><WindowEditor q={q} onChange={(window) => patchQuery({ window })} /></ChipShell>
-      <ChipShell kind="region" text={`◎ ${describeRegion(q.region)}`}><RegionEditor q={q} onChange={(region) => patchQuery({ region })} /></ChipShell>
+      <ChipShell kind="region" text={`◎ ${describeRegion(q.region)}${coarse ? ' · coarse 10 km' : ''}`} warn={coarse ? 'Coarse 10 km screening: results are leads, not 20 m answers' : undefined}><RegionEditor q={q} onChange={(region) => patchQuery({ region })} /></ChipShell>
       <ChipShell kind="height" text={txt('height')}>
         <div className="ed"><label>Observer height above terrain (m)<NumInput value={q.height_m} min={0} step={0.5} onChange={(height_m) => patchQuery({ height_m })} /></label></div>
       </ChipShell>
+      <button className={`chip toggle ${q.relay ? 'on' : ''}`} aria-pressed={!!q.relay} onClick={() => patchQuery({ relay: !q.relay })}
+        title="Assume a relay orbiter gives continuous Earth contact: comms hours equal the whole window">
+        <span className="chip-main">{q.relay ? '☑' : '☐'} Assume relay orbiter</span>
+      </button>
+      {q.power && (
+        <ChipShell kind="power" text={`⚡ ${panelSummary(q.power)}`}
+          onRemove={() => patchQuery({ power: null, filters: q.filters.filter((f) => !METRIC_BY_NAME[f.metric]?.needsPower), objectives: q.objectives.some((o) => !METRIC_BY_NAME[o.metric]?.needsPower) ? q.objectives.filter((o) => !METRIC_BY_NAME[o.metric]?.needsPower) : [{ metric: 'sun_hours', dir: 'max' }] })}>
+          <PanelFields panel={q.power} onChange={setPanel} />
+          <p className="hint">Lets Energy and Battery needed be used as filters / objectives.</p>
+        </ChipShell>
+      )}
       {q.filters.map((f, i) => (
-        <ChipShell key={`f${i}`} kind="filter" text={`${metricLabel(f.metric, edu)} ${f.op.replace('<=', '≤').replace('>=', '≥')} ${fmtMetric(f.metric, f.value).replace(/\s*\(.*\)/, '')}`}
+        <ChipShell key={`f${i}`} kind="filter" warn={coarse && METRIC_BY_NAME[f.metric]?.polarOnly ? `${metricLabel(f.metric)} does not exist on the 10 km global grid: this filter removes every result` : undefined} text={`${metricLabel(f.metric, edu)} ${f.op.replace('<=', '≤').replace('>=', '≥')} ${fmtMetric(f.metric, f.value).replace(/\s*\(.*\)/, '')}`}
           onRemove={() => patchQuery({ filters: q.filters.filter((_, j) => j !== i) })}>
           <FilterEditor f={f} onChange={(nf) => patchQuery({ filters: q.filters.map((x, j) => (j === i ? nf : x)) })} />
         </ChipShell>
@@ -157,6 +171,7 @@ export function QueryBuilder() {
               <label>Results (k)<NumInput value={q.k} min={1} max={50} onChange={(k) => patchQuery({ k: Math.round(Math.max(1, Math.min(50, k))) })} /></label>
               <label>Min separation (km)<NumInput value={q.min_separation_km} min={0} step={0.5} onChange={(min_separation_km) => patchQuery({ min_separation_km })} /></label>
             </div>
+            <label className="check"><input type="checkbox" checked={!!q.relay} onChange={(e) => patchQuery({ relay: e.target.checked })} />Assume relay orbiter (continuous comms)</label>
           </section>
         </div>
         <footer><button className="btn primary" onClick={close}>Show results</button></footer>

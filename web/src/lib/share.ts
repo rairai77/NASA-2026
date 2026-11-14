@@ -2,6 +2,7 @@ import LZ from 'lz-string';
 
 export interface TargetStub { id: string; lat: number; lon: number; name: string; kind: string }
 export interface ShareState {
+  /** the full Query object: includes region (polar/circle/bbox/global/sites), relay and power; sanitised by mergeQuery on load */
   q?: unknown;
   sel?: TargetStub | null;
   cmp?: TargetStub[];

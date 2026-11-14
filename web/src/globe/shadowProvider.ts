@@ -99,7 +99,7 @@ export class ShadowImageryProvider {
         const lightness = sun * (0.25 + 0.75 * rel);
         const o = 4 * (j * TS + i);
         img.data[o] = 6; img.data[o + 1] = 9; img.data[o + 2] = 20; // earthshine-tinted black
-        const edge = Math.max(0, Math.min(1, (1 - rr) / 0.15));
+        const edge = Math.max(0, Math.min(1, (1 - rr) / 0.05));
         img.data[o + 3] = 255 * 0.93 * (1 - lightness) * edge;
         any = true;
       }

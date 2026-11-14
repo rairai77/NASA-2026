@@ -269,7 +269,9 @@ function candidateGrid(q: Query, sites: Site[]): { id?: string; lat: number; lon
   const out: { lat: number; lon: number }[] = [];
   let lo: number, hi: number;
   if (reg.type === 'polar') { lo = Math.min(reg.min_lat, reg.max_lat); hi = Math.max(reg.min_lat, reg.max_lat); }
-  else { lo = reg.lat - reg.radius_km / (R_KM * D2R); hi = reg.lat + reg.radius_km / (R_KM * D2R); }
+  else if (reg.type === 'circle') { lo = reg.lat - reg.radius_km / (R_KM * D2R); hi = reg.lat + reg.radius_km / (R_KM * D2R); }
+  else if (reg.type === 'bbox') { lo = reg.south; hi = reg.north; }
+  else { lo = -90; hi = 90; }
   lo = Math.max(-90, lo); hi = Math.min(90, hi);
   const areaKm2 = 2 * Math.PI * R_KM * R_KM * Math.abs(Math.sin(hi * D2R) - Math.sin(lo * D2R));
   const spacing = Math.max(2.5, Math.sqrt(areaKm2 / 1400));
@@ -280,6 +282,7 @@ function candidateGrid(q: Query, sites: Site[]): { id?: string; lat: number; lon
     for (let j = 0; j < nLon; j++) {
       const lon = ((j + 0.5) / nLon) * 360 - 180;
       if (reg.type === 'circle' && distKm({ lat, lon }, reg) > reg.radius_km) continue;
+      if (reg.type === 'bbox' && ((lon - reg.west + 720) % 360) > ((reg.east - reg.west + 720) % 360)) continue;
       out.push({ lat, lon });
     }
   }
@@ -411,6 +414,9 @@ export class MockEngine implements EngineApi {
     }
     return { points, summary };
   }
+
+  async power(): Promise<null> { return null; }
+  async traverse(): Promise<null> { return null; }
 
   /** Mock patch: procedural crater-ish relief, ray-marched toward the Sun. Same layout as the real one. */
   async shadowPatch(lat: number, lon: number, sizeKm: number, px: number, t: number): Promise<ShadowPatch> {

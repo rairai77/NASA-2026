@@ -6,9 +6,43 @@ import { select, setCursor, toggleCompare, useActiveIds, useStore, windowOf } fr
 import { COLORS } from './LeftPanel.tsx';
 import { Why } from './ui.tsx';
 
-const ROW_H = 34;
+const ROW_H = 44;
 const AXIS_H = 24;
 const LABEL_W = 176;
+export const COMMS_COLORS = { clear: '#3DDC97', marginal: '#F5A524', gap: '#C0504D' };
+
+/** Comms lane under a row: clear / marginal (Earth skims the skyline) / DSN gap (Earth up but no DSN dish sees the Moon).
+ *  With a relay orbiter assumed the whole lane is clear. Needs linkMargin (and dsnUp) from the engine. */
+export function drawCommsRow(g: CanvasRenderingContext2D, v: VisResult | undefined, x: (t: number) => number, v0: number, v1: number, W: number, y: number, relay = false) {
+  g.fillStyle = 'rgba(255,255,255,0.045)';
+  g.fillRect(0, y + 34, W, 7);
+  if (!v || v.t.length < 2 || (!v.linkMargin && !relay)) return;
+  const n = v.t.length, step = v.t[1] - v.t[0], t0 = v.t[0];
+  const iA = clamp(Math.floor((v0 - t0) / step) - 1, 0, n - 1);
+  const iB = clamp(Math.ceil((v1 - t0) / step) + 1, 0, n - 1);
+  const pxPerStep = Math.abs(x(t0 + step) - x(t0));
+  const cols = Math.ceil(W);
+  const cl = new Float32Array(cols), ma = new Float32Array(cols), gp = new Float32Array(cols), cnt = new Float32Array(cols);
+  for (let i = iA; i <= iB; i++) {
+    const px0 = x(v.t[i]);
+    const a = Math.max(0, Math.floor(px0)), b = Math.min(cols - 1, Math.max(a, Math.ceil(px0 + pxPerStep) - 1));
+    const lm = relay ? 2 : v.linkMargin![i];
+    const gap = !relay && v.dsnUp ? v.dsnUp[i] === 0 : false;
+    for (let c = a; c <= b; c++) {
+      cnt[c]++;
+      if (lm === 0) continue;
+      if (gap) gp[c]++; else if (lm === 1) ma[c]++; else cl[c]++;
+    }
+  }
+  for (let c = 0; c < cols; c++) {
+    if (!cnt[c]) continue;
+    g.globalAlpha = cl[c] / cnt[c]; g.fillStyle = COMMS_COLORS.clear; g.fillRect(c, y + 34, 1, 7);
+    g.globalAlpha = ma[c] / cnt[c]; g.fillStyle = COMMS_COLORS.marginal; g.fillRect(c, y + 34, 1, 7);
+    g.globalAlpha = gp[c] / cnt[c]; g.fillStyle = COMMS_COLORS.gap; g.fillRect(c, y + 34, 1, 7);
+  }
+  g.globalAlpha = 1;
+}
+
 export const SPEEDS: [string, number][] = [['1 h/s', HOUR], ['6 h/s', 6 * HOUR], ['1 d/s', DAY]];
 
 export function drawRow(g: CanvasRenderingContext2D, v: VisResult | undefined, x: (t: number) => number, v0: number, v1: number, W: number, y: number) {
@@ -112,8 +146,11 @@ export function Timeline() {
     const xa = xOf(win[0]), xb = xOf(win[1]);
     if (xa > 0) g.fillRect(0, AXIS_H, xa, H - AXIS_H);
     if (xb < W) g.fillRect(xb, AXIS_H, W - xb, H - AXIS_H);
-    ids.forEach((id, i) => drawRow(g, data[id]?.vis, xOf, view[0], view[1], W, AXIS_H + i * ROW_H));
-  }, [ids, data, view, W, H, win, xOf]);
+    ids.forEach((id, i) => {
+      drawRow(g, data[id]?.vis, xOf, view[0], view[1], W, AXIS_H + i * ROW_H);
+      drawCommsRow(g, data[id]?.vis, xOf, view[0], view[1], W, AXIS_H + i * ROW_H, query.relay === true);
+    });
+  }, [ids, data, view, W, H, win, xOf, query.relay]);
 
   // wheel zoom / pan
   useEffect(() => {
@@ -181,7 +218,8 @@ export function Timeline() {
       <div className="tl-head">
         <PlayControls />
         <div className="tl-right">
-          <span className="legend"><Why id="timeline-bands" /><i style={{ background: COLORS.sun }} />Sun <i style={{ background: COLORS.earth }} />Earth <i style={{ background: COLORS.both }} />both <i style={{ background: COLORS.eclipse }} />eclipse</span>
+          <span className="legend"><Why id="timeline-bands" /><i style={{ background: COLORS.sun }} />Sun <i style={{ background: COLORS.earth }} />Earth <i style={{ background: COLORS.both }} />both <i style={{ background: COLORS.eclipse }} />eclipse
+            {' '}{'·'} Comms <i style={{ background: COMMS_COLORS.clear }} />clear <i style={{ background: COMMS_COLORS.marginal }} />marginal <i style={{ background: COMMS_COLORS.gap }} />DSN gap{query.relay ? ' (relay assumed)' : ''}</span>
           {zoomed && <button className="btn sm" onClick={() => useStore.setState({ view: win })}>Reset zoom</button>}
           <span className="keys">wheel = zoom {'·'} drag = pan {'·'} drag ruler = scrub</span>
         </div>
