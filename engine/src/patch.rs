@@ -5,7 +5,7 @@ use crate::error::Res;
 use crate::geo::*;
 use crate::horizon::chain_for;
 use crate::par::pchunks_mut;
-use crate::terrain::{TileSet, Terrain};
+use crate::terrain::{Kind, TileSet, Terrain};
 use crate::visibility::sun_fraction;
 
 /// Cached height grid for one patch (independent of time).
@@ -124,6 +124,33 @@ pub fn plan_patch(t: &Terrain, lat: f64, lon: f64, size_km: f64, px: usize, set:
     for &i in &idx {
         for &j in &idx {
             probe(i, j);
+        }
+    }
+    // Equirect tiles converge at the pole (width ~ tile_width_rad * d), so a strided probe can
+    // skip whole tiles there. Probe every pixel within the radius where tiles are narrower
+    // than the stride, for equirect levels this patch can actually use.
+    let d_max = t
+        .levels
+        .iter()
+        .filter(|l| l.kind == Kind::Equirect && l.pixel_m <= pixel_m)
+        .map(|l| stride as f64 * pixel_m / (t.tile_size as f64 * l.pixel_m / R))
+        .fold(0.0, f64::max);
+    if d_max > 0.0 {
+        let pole = [0.0, 0.0, -1.0];
+        let cz = dot(&pole, &g.center);
+        if cz > 1e-6 {
+            let (x, y) = (R * dot(&pole, &g.e) / cz, R * dot(&pole, &g.n) / cz);
+            let (pj, pi) = ((x + size_m / 2.0) / pixel_m - 0.5, (size_m / 2.0 - y) / pixel_m - 0.5);
+            let r = d_max / pixel_m * 1.1 + 2.0;
+            let lo = |c: f64| ((c - r).floor().max(0.0)) as usize;
+            let hi = |c: f64| ((c + r).ceil().min((px - 1) as f64)).max(0.0) as usize;
+            if pi + r >= 0.0 && pj + r >= 0.0 && pi - r <= (px - 1) as f64 && pj - r <= (px - 1) as f64 {
+                for i in lo(pi)..=hi(pi) {
+                    for j in lo(pj)..=hi(pj) {
+                        probe(i, j);
+                    }
+                }
+            }
         }
     }
     for k in 0..px {

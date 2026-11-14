@@ -112,3 +112,88 @@ fn nms_enforces_separation() {
     assert!(kept.len() >= 2 && kept.len() < 20);
     assert_eq!(kept[0], 0);
 }
+
+/// Heavy: real data, seam check for the south-pole patch. Run with `cargo test --release -- --ignored seam --nocapture`.
+#[test]
+#[ignore]
+fn seam_pole_patch_real_data() {
+    use crate::engine::Engine;
+    let dd = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public/data");
+    let mut eng = Engine::default();
+    let m = std::fs::read_to_string(dd.join("ephem/ephem.json")).unwrap();
+    let b = std::fs::read(dd.join("ephem/ephem.f32")).unwrap();
+    eng.load_ephemeris(&m, &b).unwrap();
+    eng.load_terrain_manifest(&std::fs::read_to_string(dd.join("terrain/manifest.json")).unwrap()).unwrap();
+    let keys = eng.required_tiles_patch(-90.0, 0.0, 650.0, 1024).unwrap();
+    eprintln!("planned {} tiles", keys.len());
+    {
+        let t = eng.terrain.as_mut().unwrap();
+        let nelem = t.tile_size * t.tile_size;
+        for k in &keys {
+            let mut it = k.split('/');
+            let (id, ty, tx) = (it.next().unwrap(), it.next().unwrap().parse::<usize>().unwrap(), it.next().unwrap().parse::<usize>().unwrap());
+            let path = dd.join(format!("terrain/{id}/{ty}/{tx}.i16.gz"));
+            let out = std::process::Command::new("gzip").arg("-dc").arg(&path).output().unwrap();
+            assert_eq!(out.stdout.len(), nelem * 2, "{k}");
+            t.add_tile(id, tx, ty, &out.stdout).unwrap();
+        }
+    }
+    let r = eng.shadow_patch(-90.0, 0.0, 650.0, 1024, 1794873600.0).unwrap();
+    let px = 1024;
+    let lit = |c0: usize, c1: usize| (300..600).map(|i| (c0..c1).filter(|&j| r.data[(i * px + j) * 2] > 0).count()).sum::<usize>();
+    eprintln!("sun az {} el {}", r.sun_az, r.sun_el);
+    eprintln!("strict strip cols 503..514 rows 300..700 lit = {}", lit(503, 514));
+    eprintln!("lit strip 498..520 = {}, mirror 504..526 = {}", lit(498, 520), lit(504, 526));
+    for i in [300, 400, 500, 600, 700] {
+        let row: Vec<usize> = (498..520).filter(|&j| r.data[(i * px + j) * 2] > 0).collect();
+        eprintln!("row {i}: lit cols {row:?}");
+    }
+    // DEM level used along row 500 across x = 0
+    let g = eng.patch_grid(-90.0, 0.0, 650.0, 1024).unwrap();
+    let t = eng.terrain.as_ref().unwrap();
+    let (cf, ff) = t.levels_by_pixel();
+    for j in 505..520 {
+        let (x, y) = g.xy(500, j);
+        let p = g.point(x, y);
+        let used: Vec<String> = cf.iter().filter(|&&li| t.levels[li].pixel_m <= g.pixel_m).chain(ff.iter()).take(6).map(|&li| format!("{}:{:?}", t.levels[li].id, t.sample(li, &p))).collect();
+        eprintln!("col {j} x={x:.1} y={y:.1} up={} {used:?}", g.up[500 * px + j]);
+    }
+}
+
+/// Planning must not skip the sliver-shaped equirect tiles beside the pole (manifest only, no tile data).
+#[test]
+fn pole_patch_plan_covers_sliver_tiles() {
+    use crate::engine::Engine;
+    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public/data/terrain/manifest.json");
+    let Ok(json) = std::fs::read_to_string(p) else { return };
+    let mut eng = Engine::default();
+    eng.load_terrain_manifest(&json).unwrap();
+    let keys = eng.required_tiles_patch(-90.0, 0.0, 650.0, 1024).unwrap();
+    assert!(keys.iter().any(|k| k == "g0/44/89"), "g0/44/89 missing from plan");
+}
+
+/// Heavy: local patch plan time/tile count with real manifest.
+#[test]
+#[ignore]
+fn local_patch_plan_cost() {
+    use crate::engine::Engine;
+    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public/data/terrain/manifest.json");
+    let mut eng = Engine::default();
+    eng.load_terrain_manifest(&std::fs::read_to_string(p).unwrap()).unwrap();
+    let t0 = std::time::Instant::now();
+    let keys = eng.required_tiles_patch(-88.7, -68.3, 60.0, 2048).unwrap();
+    eprintln!("local plan: {} tiles, {:?}", keys.len(), t0.elapsed());
+}
+
+/// Heavy: pole patch plan time with real manifest.
+#[test]
+#[ignore]
+fn pole_patch_plan_cost() {
+    use crate::engine::Engine;
+    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/public/data/terrain/manifest.json");
+    let mut eng = Engine::default();
+    eng.load_terrain_manifest(&std::fs::read_to_string(p).unwrap()).unwrap();
+    let t0 = std::time::Instant::now();
+    let keys = eng.required_tiles_patch(-90.0, 0.0, 650.0, 1024).unwrap();
+    eprintln!("pole plan: {} tiles, {:?}", keys.len(), t0.elapsed());
+}
