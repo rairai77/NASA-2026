@@ -5,7 +5,7 @@
 // hides them, and the engine's computed 720-azimuth LOLA skyline is drawn as an overlay (authoritative: Cesium's rendered
 // terrain far away is coarser than the computed horizon).
 import {
-  ArcType, BillboardCollection, Cartesian3, Cartographic, Color, CustomDataSource, Ellipsoid, HorizontalOrigin, LabelStyle,
+  BillboardCollection, Cartesian3, Cartographic, Color, Ellipsoid, HorizontalOrigin,
   PointPrimitiveCollection, VerticalOrigin, type Billboard, type Viewer,
 } from 'cesium';
 import { getEngine } from '../engine/client.ts';
@@ -15,7 +15,6 @@ import { setFirstPersonActive } from './cameraMode.ts';
 const MOON = Ellipsoid.MOON;
 const D2R = Math.PI / 180;
 const SKY_DIST = 1.0e6; // m: Sun/Earth/stars are placed this far from the eye (real terrain still occludes them)
-const SKYLINE_DIST = 4.0e5; // m
 const PITCH_MIN = -60, PITCH_MAX = 85, FOV_MIN = 15, FOV_MAX = 100, FOV_DEFAULT = 70;
 const SKYLINE_COLOR = '#2EE6C5';
 
@@ -40,7 +39,7 @@ interface State {
   tHeading: number; tPitch: number; anim: number | null; animT: number;
   sunDir: Cartesian3 | null; earthDir: Cartesian3 | null; sunR: number; earthR: number;
   bills: BillboardCollection; sun: Billboard; halo: Billboard; earth: Billboard; stars: PointPrimitiveCollection;
-  skyDs: CustomDataSource; skylineOn: boolean; horizon: Float32Array | null; siteId: string | null;
+  overlay: HTMLCanvasElement; skylineOn: boolean; horizon: Float32Array | null; siteId: string | null;
   disposers: Array<() => void>; siteLabelAz: number; earthPhaseStep: number; busy: boolean; dirty: boolean;
 }
 let st: State | null = null;
@@ -179,27 +178,57 @@ function orientEarth(s: State) {
   if (e && u) s.earth.rotation = Math.atan2(u[1] - e[1], u[0] - e[0]);
 }
 
-function drawSkyline(s: State) {
-  s.skyDs.entities.removeAll();
-  if (!s.skylineOn || !s.horizon || !s.horizon.length) { s.viewer.scene.requestRender(); return; }
-  const h = s.horizon, n = h.length, pos: Cartesian3[] = [];
+/** Request a redraw of the 2D skyline overlay (it is painted on every scene.postRender, see paintSkyline). */
+function drawSkyline(s: State) { s.viewer.scene.requestRender(); }
+
+const SKY_LABEL_FONT = '600 12px "Inter Variable", ui-sans-serif, system-ui, sans-serif';
+/** Stroke the computed skyline (and its label) on the 2D overlay canvas, projected through the current camera. */
+function paintSkyline(s: State) {
+  const cv = s.overlay, scene = s.viewer.scene, cam = s.viewer.camera, base = scene.canvas;
+  const dpr = window.devicePixelRatio || 1, W = base.clientWidth, H = base.clientHeight;
+  const pw = Math.round(W * dpr), ph = Math.round(H * dpr);
+  if (cv.width !== pw || cv.height !== ph) { cv.width = pw; cv.height = ph; } // resizing also clears
+  const g = cv.getContext('2d');
+  if (!g) return;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, cv.width, cv.height);
+  const h = s.horizon;
+  if (!s.skylineOn || !h || !h.length || W < 2 || H < 2) return;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const n = h.length, ty = Math.tan((cam.frustum as unknown as { fovy: number }).fovy / 2), tx = ty * (W / H);
+  const r = cam.rightWC, u = cam.upWC, d = cam.directionWC, E = s.E, N = s.N, U = s.U;
+  const EPS = 0.01;
+  // az/el (local ENU, az clockwise from north) -> css px; false when behind the camera
+  let px = 0, py = 0;
+  const project = (azDeg: number, elDeg: number): boolean => {
+    const az = azDeg * D2R, el = elDeg * D2R, c = Math.cos(el);
+    const e = c * Math.sin(az), nn = c * Math.cos(az), up = Math.sin(el);
+    const vx = E.x * e + N.x * nn + U.x * up, vy = E.y * e + N.y * nn + U.y * up, vz = E.z * e + N.z * nn + U.z * up;
+    const f = vx * d.x + vy * d.y + vz * d.z;
+    if (f <= EPS) return false;
+    px = W / 2 + ((vx * r.x + vy * r.y + vz * r.z) / f / tx) * W / 2;
+    py = H / 2 - ((vx * u.x + vy * u.y + vz * u.z) / f / ty) * H / 2;
+    return true;
+  };
+  g.strokeStyle = SKYLINE_COLOR; g.globalAlpha = 0.9; g.lineWidth = 2; g.lineJoin = 'round'; g.lineCap = 'round';
+  g.beginPath();
+  let pen = false;
   for (let i = 0; i <= n; i++) {
-    const v = azElToVec(s, (i % n) * 360 / n, h[i % n]);
-    pos.push(new Cartesian3(s.eye.x + v.x * SKYLINE_DIST, s.eye.y + v.y * SKYLINE_DIST, s.eye.z + v.z * SKYLINE_DIST));
+    if (!project((i % n) * 360 / n, h[i % n])) { pen = false; continue; }
+    if (pen) g.lineTo(px, py); else { g.moveTo(px, py); pen = true; }
   }
-  const col = Color.fromCssColorString(SKYLINE_COLOR);
-  s.skyDs.entities.add({ polyline: { positions: pos, width: 2, arcType: ArcType.NONE, material: col.withAlpha(0.9), depthFailMaterial: col.withAlpha(0.9) } });
-  // labelled once, just above the skyline in the direction the visitor first looks
-  const az = s.siteLabelAz, el = h[Math.round(wrap360(az) / 360 * n) % n] + 1.2, v = azElToVec(s, az, el);
-  s.skyDs.entities.add({
-    position: new Cartesian3(s.eye.x + v.x * SKYLINE_DIST, s.eye.y + v.y * SKYLINE_DIST, s.eye.z + v.z * SKYLINE_DIST),
-    label: {
-      text: 'computed skyline (LOLA)', font: '600 12px "Inter Variable", ui-sans-serif, system-ui, sans-serif', style: LabelStyle.FILL, fillColor: col,
-      showBackground: true, backgroundColor: Color.fromCssColorString('rgba(10,13,19,0.8)'), verticalOrigin: VerticalOrigin.BOTTOM, horizontalOrigin: HorizontalOrigin.CENTER,
-      disableDepthTestDistance: Number.POSITIVE_INFINITY,
-    },
-  });
-  s.viewer.scene.requestRender();
+  g.stroke();
+  // label just above the skyline in the direction the visitor first looks
+  const laz = s.siteLabelAz;
+  if (project(laz, h[Math.round(wrap360(laz) / 360 * n) % n] + 1.2)) {
+    g.font = SKY_LABEL_FONT; g.textBaseline = 'middle'; g.textAlign = 'left';
+    const text = 'computed skyline (LOLA)', tw = g.measureText(text).width, bw = tw + 14, bh = 22;
+    const bx = px - bw / 2, by = py - bh;
+    g.globalAlpha = 1; g.fillStyle = 'rgba(10,13,19,0.8)';
+    g.beginPath(); g.roundRect(bx, by, bw, bh, 4); g.fill();
+    g.fillStyle = SKYLINE_COLOR; g.fillText(text, bx + 7, by + bh / 2 + 0.5);
+  }
+  g.globalAlpha = 1;
 }
 
 // ---- public API --------------------------------------------------------------------------------
@@ -220,17 +249,19 @@ export function enterFirstPerson(viewer: Viewer, opts: FirstPersonOpts): void {
   const mk = (img: HTMLCanvasElement) => bills.add({ position: Cartesian3.ZERO, image: img, sizeInMeters: true, show: false, verticalOrigin: VerticalOrigin.CENTER, horizontalOrigin: HorizontalOrigin.CENTER });
   const halo = mk(haloCanvas()), sun = mk(sunCanvas()), earth = mk(earthCanvas(12));
   const stars = makeStars();
-  const skyDs = new CustomDataSource('fp-skyline');
+  const overlay = document.createElement('canvas');
+  overlay.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:1';
+  (scene.canvas.parentElement ?? viewer.container).appendChild(overlay); // .cesium-widget is position:relative and the canvas fills it
   const heading = wrap360(opts.headingDeg ?? 0);
   const s: State = {
     viewer, saved, lat: opts.lat, lon: opts.lon, groundM: opts.groundM, heightM, eyeH: 0, eye: new Cartesian3(), E, N, U,
     heading, pitch: clamp(opts.pitchDeg ?? 2, PITCH_MIN, PITCH_MAX), fov: FOV_DEFAULT, tHeading: heading, tPitch: 2, anim: null, animT: 0,
-    sunDir: null, earthDir: null, sunR: 0.2666, earthR: 0.95, bills, sun, halo, earth, stars, skyDs, skylineOn: true, horizon: null, siteId: opts.siteId ?? null,
+    sunDir: null, earthDir: null, sunR: 0.2666, earthR: 0.95, bills, sun, halo, earth, stars, overlay, skylineOn: true, horizon: null, siteId: opts.siteId ?? null,
     disposers: [], siteLabelAz: heading, earthPhaseStep: 12, busy: false, dirty: false,
   };
   s.tPitch = s.pitch;
   st = s;
-  scene.primitives.add(stars); scene.primitives.add(bills); viewer.dataSources.add(skyDs);
+  scene.primitives.add(stars); scene.primitives.add(bills);
   // hide the globe-scale Sun/Earth sprites, pins and rings (they would draw at the eye); restore on exit
   for (const name of ['sky', 'sel', 'results', 'sites']) {
     const d = viewer.dataSources.getByName(name)[0];
@@ -259,6 +290,8 @@ export function enterFirstPerson(viewer: Viewer, opts: FirstPersonOpts): void {
   };
   s.disposers.push(scene.globe.tileLoadProgressEvent.addEventListener((n) => { if (n === 0) refine(); }));
   s.disposers.push(scene.preRender.addEventListener(() => { if (st === s) orientEarth(s); }));
+  s.disposers.push(scene.postRender.addEventListener(() => { if (st === s) paintSkyline(s); }));
+  s.disposers.push(() => overlay.remove());
   refine();
 
   // input: drag = look, wheel = FOV, two-finger pinch = FOV
@@ -345,7 +378,7 @@ export function exitFirstPerson(viewer: Viewer, keepSaved = false): void {
   if (keepSaved) savedForReenter = s.saved;
   if (!viewer.isDestroyed()) {
     const scene = viewer.scene, f = viewer.camera.frustum as unknown as { near: number; far: number; fov: number };
-    scene.primitives.remove(s.stars); scene.primitives.remove(s.bills); viewer.dataSources.remove(s.skyDs, true);
+    scene.primitives.remove(s.stars); scene.primitives.remove(s.bills);
     for (const [name, show] of Object.entries(s.saved.ds)) { const d = viewer.dataSources.getByName(name)[0]; if (d) d.show = show; }
     if (scene.skyBox && s.saved.sky !== undefined) scene.skyBox.show = s.saved.sky;
     scene.screenSpaceCameraController.enableInputs = s.saved.inputs;

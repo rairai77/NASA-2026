@@ -395,7 +395,7 @@ export default function Globe() {
         position: pos(ellipse.lat, ellipse.lon), name: 'Landing ellipse',
         ellipse: { semiMajorAxis: a, semiMinorAxis: b, rotation: CMath.toRadians(rot), material: Color.fromCssColorString('#2EE6C5').withAlpha(0.4) },
       });
-      getOrbitControls()?.flyTo({ lat: ellipse.lat, lon: ellipse.lon, range: a * 6, tilt: 15, duration: 1.4 });
+      getOrbitControls()?.flyTo({ lat: ellipse.lat, lon: ellipse.lon, range: a * 6, tilt: 0, duration: 1.4 });
     }
     viewer.scene.requestRender();
   }, [ellipse, ready]);
@@ -553,12 +553,10 @@ export default function Globe() {
     const t = fly.id ? useStore.getState().targets[fly.id] : undefined;
     if (!t) return;
     (async () => {
-      // Frame the local shadow patch: tilted ~28 km view, Sun off to the right so slopes are raking-lit.
-      // The orbit controls sample the terrain around the target and keep the camera clear of it.
-      let sunAz = 0;
-      try { sunAz = (await getEngine().sunEarthAt(t.lat, t.lon, useStore.getState().cursor)).sunAz; } catch { /* north */ }
+      // Pan to the site top-down and north-up: the target lands at screen centre on the line through the Moon's centre,
+      // so dragging still rotates the Moon about its centre. The orbit controls keep the camera clear of the terrain.
       if (viewer.isDestroyed() || tokenRef.current !== fly.nonce) return;
-      await getOrbitControls()?.flyTo({ lat: t.lat, lon: t.lon, range: 28000, tilt: TILT_ON_DEG, heading: sunAz - 90, duration: 2 });
+      await getOrbitControls()?.flyTo({ lat: t.lat, lon: t.lon, range: 28000, tilt: 0, heading: 0, duration: 2 });
     })();
   }, [fly]);
 
