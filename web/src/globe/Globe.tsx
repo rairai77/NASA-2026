@@ -40,6 +40,37 @@ const r4 = (v: Cartesian3) => [v.x, v.y, v.z].map((x) => Math.round(x * 1e5) / 1
 // Default / "Pole view": top-down over the south pole (see orbitControls.home()); the view axis passes through the Moon's centre.
 // The altitude keeps the camera above the 350 km "local" threshold so the 650 km regional shadow patch is used.
 const TILT_ON_DEG = 50;
+
+/**
+ * Cesium ranks tile loads by (1 - cos(angle from the view direction)) * distance, where the distance of a
+ * not-yet-loaded tile comes from its ancestor's height range. In a ground-level view the endless far tiles
+ * straight ahead score ~0 and always outrank the tiles under the camera, so the ground underfoot never
+ * refined (it stayed at level 4-5 while the horizon reached level 12). Rank by surface distance from the
+ * camera's ground point to the tile instead, with the view direction as a factor of at most 2.
+ */
+function prioritiseNearTiles(viewer: Viewer) {
+  type Tile = { rectangle: Rectangle; _distance?: number };
+  type Tp = { computeTileLoadPriority?: (tile: Tile, fs: unknown) => number };
+  const tp = (viewer.scene.globe as unknown as { _surface?: { tileProvider?: Tp } })._surface?.tileProvider;
+  const orig = tp?.computeTileLoadPriority?.bind(tp);
+  if (!tp || !orig) return;
+  const R = MOON.maximumRadius;
+  tp.computeTileLoadPriority = (tile, fs) => {
+    const c = viewer.camera.positionCartographic, r = tile.rectangle;
+    if (!c || !r) return orig(tile, fs);
+    const lat = Math.min(r.north, Math.max(r.south, c.latitude));
+    let dLon = 0;
+    if (c.longitude < r.west || c.longitude > r.east) {
+      const a = Math.abs(c.longitude - r.west), b = Math.abs(c.longitude - r.east);
+      dLon = Math.min(a, 2 * Math.PI - a, b, 2 * Math.PI - b);
+    }
+    const ground = R * Math.hypot(c.latitude - lat, dLon * Math.cos(lat));
+    const d = Math.hypot(ground, Math.max(0, Math.min(c.height, 1e7)) * 0.1);
+    const td = tile._distance;
+    const angle = typeof td === 'number' && td > 1 ? Math.min(2, Math.max(0, orig(tile, fs) / td)) : 1; // 1 - dot, in [0, 2]
+    return d * (1 + 0.5 * angle);
+  };
+}
 const RELIEF_STEPS = [1, 2, 4];
 
 function pos(lat: number, lon: number, h = 0) { return Cartesian3.fromDegrees(lon, lat, h, MOON); }
@@ -148,6 +179,7 @@ export default function Globe() {
     scene.globe.dynamicAtmosphereLighting = false;
     scene.globe.baseColor = Color.fromCssColorString('#7d7d7d');
     scene.globe.terrainProvider = createTerrainProvider(getEngine());
+    prioritiseNearTiles(viewer);
     if (scene.skyAtmosphere) scene.skyAtmosphere.show = false;
     if (scene.sun) scene.sun.show = false;
     if (scene.moon) scene.moon.show = false;

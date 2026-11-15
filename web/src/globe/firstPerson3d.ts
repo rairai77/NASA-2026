@@ -270,7 +270,9 @@ export function enterFirstPerson(viewer: Viewer, opts: FirstPersonOpts): void {
   if (scene.skyBox) scene.skyBox.show = false; // inertial star skybox does not match the Moon-fixed frame; we draw our own stars
   scene.screenSpaceCameraController.enableInputs = false;
   scene.verticalExaggeration = 1; // the computed skyline is true-scale
-  scene.globe.maximumScreenSpaceError = 1.5;
+  // A ground-level view sees thousands of tiles out to the horizon. A looser error budget keeps the far field
+  // cheap so the ground near the viewer (where the error in pixels is huge) refines to full detail quickly.
+  scene.globe.maximumScreenSpaceError = 4;
   frustum.near = 0.5; frustum.fov = FOV_DEFAULT * D2R;
   setFirstPersonActive(true); setOrbitEnabled(false);
   useStore.setState({ fpActive: true });
