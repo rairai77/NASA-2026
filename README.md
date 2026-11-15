@@ -4,7 +4,7 @@
 
 **Lunar Landing Site Navigator shows which lunar sites and dates give a lander sunlight and a line of sight to Earth, and why, using the real local skyline.**
 
-**Try it:** Open the live demo and click *CLPS slipped to June 2028* on the welcome card.
+**Try it:** Open the live demo and click *Launch slips to June 2028* on the welcome card, then *Compare with Mar 1 – Mar 31, 2028* above the results.
 
 Why trust it (details in [`docs/VALIDATION.md`](docs/VALIDATION.md)):
 
