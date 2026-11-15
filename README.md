@@ -160,7 +160,7 @@ Thanks to the teams behind LRO and LOLA, LROC, NAIF/SPICE, JPL Horizons, the Pla
 
 ## AI tools used
 
-- **Claude Code** (Anthropic) was used throughout development. It wrote most of the code and documentation under the team's direction.
+- **Claude Code** (Anthropic) was used throughout development. It wrote some code under the team's direction.
 - **An LLM via OpenRouter** is used at runtime for one purpose only: turning a typed request into editable query chips (`POST /api/parse`, one forced tool call, output validated against the query schema). It is never in the ranking or metric path, writes no explanations, and the app works without it through the form UI. Model: `anthropic/claude-haiku-5.5`, set by `PARSE_MODEL` in `wrangler.toml`.
 - No generative AI was used to make imagery or data.
 
