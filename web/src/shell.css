@@ -43,7 +43,15 @@
 
 /* ---- query strip ---- */
 .qstrip { position: relative; z-index: 25; display: flex; align-items: center; min-height: 44px; padding: 8px 14px; background: var(--surface-0); border-bottom: 1px solid var(--border); }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; min-width: 0; }
+.qstrip { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.qstrip::-webkit-scrollbar { display: none; }
+.chips { display: flex; flex-wrap: nowrap; gap: 6px; align-items: center; width: max-content; min-width: 100%; }
+.chip, .qs-word { flex: none; }
+/* right-edge fade while more chips are scrolled out of view */
+.qstrip[data-more]::after { content: ""; position: sticky; right: 0; flex: none; align-self: stretch; width: 32px; margin-left: -32px; pointer-events: none; background: linear-gradient(to right, transparent, var(--surface-0)); }
+/* popovers escape the scrolling strip: fixed keeps the spot they would have had in the flow */
+.qstrip .pop { position: fixed; top: auto; margin-top: 8px; }
+.qstrip .pop-right .pop { left: auto; right: 14px; }
 .qs-word { color: var(--text-3); font-size: 12.5px; padding: 0 1px; }
 .qs-spacer { flex: 1; }
 .popwrap { position: relative; display: inline-block; }
@@ -56,8 +64,20 @@
 .chip-l { color: var(--text-3); }
 .chip-v { color: var(--text); display: inline-flex; align-items: center; gap: 6px; }
 .chip-n { display: inline-grid; place-items: center; min-width: 16px; height: 16px; border-radius: 8px; background: var(--surface-3); color: var(--text-2); font-size: 10px; font-weight: 600; }
-.chip-x { display: grid; place-items: center; width: 22px; height: 22px; margin-right: 3px; border: 0; background: transparent; border-radius: 50%; color: var(--text-3); padding: 0; }
+.chip-x { position: relative; display: grid; place-items: center; width: 22px; height: 22px; margin-right: 3px; border: 0; background: transparent; border-radius: 50%; color: var(--text-3); padding: 0; }
 .chip-x svg { width: 12px; height: 12px; }
+/* hit areas: 32 px on desktop, 44 px on touch, while the chip keeps its compact look */
+.chip { position: relative; }
+.chip-main::before, .chip-x::before, .chip-dir::before { content: ""; position: absolute; top: 50%; height: 32px; transform: translateY(-50%); }
+.chip-main::before { left: 0; right: 0; }
+.chip-x::before { left: -5px; right: -5px; height: 32px; }
+.chip-dir::before { left: 0; right: 0; }
+.chip-main, .chip-dir { position: relative; }
+.chip-x::before { z-index: 1; }
+@media (pointer: coarse) {
+  .chip-main::before, .chip-x::before, .chip-dir::before { height: 44px; }
+  .chip-x::before { left: -9px; right: -9px; }
+}
 .chip-x:hover { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
 .chip-dir { display: grid; place-items: center; width: 26px; height: 100%; padding: 0 0 0 4px; border: 0; background: transparent; color: var(--primary-text); border-radius: var(--r-pill) 0 0 var(--r-pill); }
 .chip-dir svg { width: 15px; height: 15px; }
@@ -250,8 +270,10 @@
 @media (max-width: 1180px) { .tb-tour .lbl { display: none; } .tb-tour.ui-btn { padding: 0 9px; } }
 
 /* ---- (i) explanations ---- */
-.why { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 5px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--text-3); opacity: .75; cursor: help; vertical-align: -2px; font: inherit; text-transform: none; letter-spacing: 0; }
+.why { position: relative; display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 5px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--text-3); opacity: 1; cursor: help; vertical-align: -2px; font: inherit; text-transform: none; letter-spacing: 0; }
 .why svg { width: 13px; height: 13px; }
+.why::before { content: ""; position: absolute; left: 50%; top: 50%; width: 28px; height: 28px; transform: translate(-50%, -50%); }
+@media (pointer: coarse) { .why::before { width: 44px; height: 44px; } }
 .why:hover, .why:focus-visible { opacity: 1; color: var(--primary-text); }
 .why-note { position: fixed; z-index: 200; left: 12px; right: 12px; bottom: 96px; max-width: 420px; margin: 0 auto; padding: 10px 12px; font-size: 13px; line-height: 1.5; color: var(--text-2);
   background: var(--surface-1); border: 1px solid var(--border-strong); border-radius: var(--r-md); box-shadow: var(--shadow-2); }

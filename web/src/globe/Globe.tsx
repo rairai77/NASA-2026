@@ -18,7 +18,7 @@ import { ShadowImageryProvider } from './shadowProvider.ts';
 import { POLE_PLAN, computePlans, formatRes, needsReplan, type ShadowPlan } from './shadowPlan.ts';
 import { makeMoonCanvas } from './moonTexture.ts';
 import { addDetailImagery } from './baseImagery.ts';
-import { Crosshair, House, Layers as LayersIcon, Minus, MoreHorizontal, Mountain, Plus, Rotate3d, Sun } from 'lucide-react';
+import { Crosshair, House, X as XIcon, Layers as LayersIcon, Minus, MoreHorizontal, Mountain, Plus, Rotate3d, Sun } from 'lucide-react';
 import { IconButton, Spinner, Tag } from '../components/ui.tsx';
 import { METRIC_BY_NAME } from '../query/metrics.ts';
 import { placeFor, shortName } from '../lib/places.ts';
@@ -154,6 +154,9 @@ export default function Globe() {
   const [regime, setRegime] = useState<'regional' | 'local'>('regional');
   const [shadowMock, setShadowMock] = useState(false);
   const [tilted, setTilted] = useState(false);
+  const [legendOpen, setLegendOpen] = useState(() => { try { return localStorage.getItem('lsn.globeLegend') !== '0'; } catch { return true; } });
+  const closeLegend = () => { setLegendOpen(false); try { localStorage.setItem('lsn.globeLegend', '0'); } catch { /* ignore */ } };
+  const selVis = useStore((s) => (s.selected ? s.data[s.selected]?.vis : undefined));
 
   // ---- create viewer once ----------------------------------------------------------
   useEffect(() => {
@@ -349,7 +352,9 @@ export default function Globe() {
         billboard: { image: ringCanvas('#ffffff'), width: 46, height: 46, heightReference: HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: 1.5e6, eyeOffset: new Cartesian3(0, 0, -1000), scaleByDistance: new NearFarScalar(3e4, 1.2, 1.2e7, 0.8) },
       });
     }
-    const t = selected ? targets[selected] : undefined;
+    let t = selected ? targets[selected] : undefined;
+    // a ranked pick whose search no longer returns it (empty results) must not keep its "#1 ..." ring and label
+    if (t?.rank && !(results?.results ?? []).some((r) => (r.id ?? `r:${r.lat.toFixed(4)},${r.lon.toFixed(4)}`) === selected)) t = undefined;
     if (t) {
       ds.entities.add({
         id: 'sel-ring', name: 'sel', position: pos(t.lat, t.lon),
@@ -366,7 +371,7 @@ export default function Globe() {
       });
     }
     viewer.scene.requestRender();
-  }, [selected, targets, hoveredId, ready]);
+  }, [selected, targets, hoveredId, ready, results]);
 
   // ---- fault scarps ------------------------------------------------------------------------
   useEffect(() => {
@@ -509,7 +514,7 @@ export default function Globe() {
   const lastShadowRun = useRef(0);
   const [plans, setPlans] = useState<ShadowPlan[]>([POLE_PLAN]);
   const planRef = useRef<ShadowPlan[]>([]);
-  const shadowSlots = useRef<Record<string, { layer: ImageryLayer; provider: ShadowImageryProvider }>>({});
+  const shadowSlots = useRef<Record<string, { layer: ImageryLayer; provider: ShadowImageryProvider; shown: boolean; behind: { layer: ImageryLayer; provider: ShadowImageryProvider }[] }>>({});
   const [shadowInfo, setShadowInfo] = useState<Record<string, { km: number; m: number }>>({});
   // Which patches to compute: re-evaluated when the camera stops moving; recomputed only once the view centre has
   // moved more than 30% of the patch radius (or the size/resolution step, selection or mode changed).
@@ -534,8 +539,7 @@ export default function Globe() {
       cancelShadow(slot);
       if (!s) return;
       delete slots[slot];
-      if (!viewer.isDestroyed()) viewer.imageryLayers.remove(s.layer, true);
-      s.provider.dispose();
+      for (const b of [s, ...s.behind]) { if (!viewer.isDestroyed()) viewer.imageryLayers.remove(b.layer, true); b.provider.dispose(); }
       setShadowInfo((i) => { const n = { ...i }; delete n[slot]; return n; });
     };
     const my = ++shadowToken.current;
@@ -559,13 +563,38 @@ export default function Globe() {
           if (viewer.isDestroyed()) return;
           perfLog('main.shadow', performance.now() - t0, { slot: r.slot, sizeKm: r.sizeKm, px: patch.px, final, cached });
           const provider = new ShadowImageryProvider(patch);
-          const layer = new ImageryLayer(provider as unknown as ImageryProvider, { alpha: 1 });
+          // The new overlay stays (almost) invisible until all of its tiles are drawn, then fades in; the previous
+          // overlay stays underneath until then, so there is never a partially painted patch with ragged seams.
+          const layer = new ImageryLayer(provider as unknown as ImageryProvider, { alpha: 0.01 });
           viewer.imageryLayers.add(layer);
           const old = slots[r.slot];
-          slots[r.slot] = { layer, provider };
+          const slot = { layer, provider, shown: false, behind: [] as { layer: ImageryLayer; provider: ShadowImageryProvider }[] };
+          if (old) {
+            if (old.shown) slot.behind.push(old);
+            else { slot.behind.push(...old.behind); viewer.imageryLayers.remove(old.layer, true); old.provider.dispose(); }
+          }
+          slots[r.slot] = slot;
+          const reveal = () => {
+            if (slot.shown || viewer.isDestroyed() || slots[r.slot] !== slot) return;
+            slot.shown = true;
+            const t1 = performance.now(), DUR = 260;
+            const tick = () => {
+              if (viewer.isDestroyed() || !viewer.imageryLayers.contains(layer)) return;
+              const k = Math.min(1, (performance.now() - t1) / DUR);
+              layer.alpha = k;
+              viewer.scene.requestRender();
+              if (k < 1) requestAnimationFrame(tick);
+              else {
+                for (const b of slot.behind.splice(0)) { viewer.imageryLayers.remove(b.layer, true); b.provider.dispose(); }
+                viewer.scene.requestRender();
+              }
+            };
+            requestAnimationFrame(tick);
+          };
+          provider.onSettled = reveal;
+          setTimeout(reveal, 2500); // never leave the shadows hidden if a tile never settles
           setShadowMock(!!patch.mock);
           setShadowInfo((i) => ({ ...i, [r.slot]: { km: patch.sizeKm, m: (patch.sizeKm * 1000) / patch.px } }));
-          if (old) setTimeout(() => { if (!viewer.isDestroyed()) { viewer.imageryLayers.remove(old.layer, true); viewer.scene.requestRender(); } old.provider.dispose(); }, 250);
           viewer.scene.requestRender();
         }).then(() => { if (--left === 0 && my === shadowToken.current) setShadowBusy(false); });
       }
@@ -601,6 +630,21 @@ export default function Globe() {
   }, [fpOpen, selected, ready]);
   useEffect(() => () => { const v = viewerRef.current; if (v && !v.isDestroyed()) void syncFirstPerson(v, false); }, []);
 
+  // night at the selected site: Sun disc mostly hidden at the cursor; say when it comes back
+  let nightText: string | null = null;
+  if (selVis && selVis.t.length > 1 && selected) {
+    const n = selVis.t.length, step = selVis.t[1] - selVis.t[0];
+    const i = Math.max(0, Math.min(n - 1, Math.round((cursor - selVis.t[0]) / step)));
+    if (selVis.sunFrac[i] < 0.5) {
+      let j = i + 1;
+      while (j < n && selVis.sunFrac[j] < 0.5) j++;
+      if (j >= n) nightText = 'Night at this site \u00b7 no sunrise in this window';
+      else {
+        const s = Math.max(0, selVis.t[j] - cursor), d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.round((s % 3600) / 60);
+        nightText = `Night at this site \u00b7 sunrise in ${d > 0 ? `${d} d ${h} h` : h > 0 ? `${h} h ${m} min` : `${m} min`}`;
+      }
+    }
+  }
   const hv = hover ? targets[hover.id] : null;
   const objM = query.objectives?.[0]?.metric;
   const mdef = objM ? METRIC_BY_NAME[objM] : undefined;
@@ -654,11 +698,18 @@ export default function Globe() {
         <IconButton solid tip="left" icon={LayersIcon} label="Layers" onClick={() => useStore.setState({ leftTab: 'layers' })} />
       </div>
       )}
-      {layers.shadows && !fpOpen && (
+      {!fpOpen && legendOpen && (
+        <div className="gl-legend" role="note">
+          <span className="gl-lg-disc" aria-hidden>1</span> ranked site {'\u00b7'} <span className="gl-lg-dot" aria-hidden /> catalog site {'\u00b7'} click a marker to inspect
+          <button type="button" className="gl-lg-x" aria-label="Dismiss legend" onClick={closeLegend}><XIcon aria-hidden /></button>
+        </div>
+      )}
+      {(layers.shadows || nightText) && !fpOpen && (
         <div className="gl-status" role="status">
-          {shadowBusy && <Spinner />}
-          <span>Terrain-true shadows {'\u00b7'} {(['view', 'site'] as const).filter((k) => shadowInfo[k]).map((k) => `${k === 'site' ? '+ ' : ''}${shadowInfo[k].km} km @ ${formatRes(shadowInfo[k].m)}`).join(' ')} {'\u00b7'} LOLA</span>
-          {shadowMock && <Tag tone="warn">demo patch</Tag>}
+          {shadowBusy && layers.shadows && <Spinner />}
+          {nightText && <span className="gl-night">{nightText}</span>}
+          {layers.shadows && <span>{nightText ? '\u00b7 ' : 'Terrain-true shadows \u00b7 '}{(['view', 'site'] as const).filter((k) => shadowInfo[k]).map((k) => `${k === 'site' ? '+ ' : ''}${shadowInfo[k].km} km @ ${formatRes(shadowInfo[k].m)}`).join(' ')} {'\u00b7'} LOLA</span>}
+          {layers.shadows && shadowMock && <Tag tone="warn">demo patch</Tag>}
         </div>
       )}
     </div>

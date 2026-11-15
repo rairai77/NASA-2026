@@ -12,7 +12,7 @@ export function defaultQuery(today = isoDay(new Date())): Query {
     window: { start: today, end: addDays(today, 30) },
     region: { type: 'polar', min_lat: -90, max_lat: -85 },
     height_m: 2,
-    filters: [],
+    filters: [{ metric: 'slope_deg', op: '<=', value: 10 }],
     objectives: [{ metric: 'sun_hours', dir: 'max' }, { metric: 'both_hours', dir: 'max' }],
     mode: 'lexicographic',
     weights: null,

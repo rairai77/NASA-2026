@@ -13,7 +13,7 @@ import { ValidationModal } from './components/ValidationModal.tsx';
 import { buildCsv, download, type CsvRow } from './lib/csv.ts';
 import { encodeState } from './lib/share.ts';
 import { DAY, HOUR } from './lib/time.ts';
-import { bootstrap, dataKey, refreshData, saveScenario, setCursor, stubOf, toast, useStore, windowOf, useActiveIds } from './store.ts';
+import { bootstrap, dataKey, isRankSelecting, refreshData, saveScenario, setCursor, stubOf, toast, useStore, windowOf, useActiveIds } from './store.ts';
 import { Tour } from './components/Tour.tsx';
 
 const Globe = lazy(() => import('./globe/Globe.tsx'));
@@ -185,7 +185,7 @@ export default function App() {
     const down = () => { last = performance.now(); };
     window.addEventListener('pointerdown', down, true);
     const un = useStore.subscribe((st, p) => {
-      if (st.selected && st.selected !== p.selected && window.matchMedia('(max-width: 899px)').matches && performance.now() - last < 700 && st.tourStep === null) useStore.setState({ phoneTab: 'site' });
+      if (st.selected && st.selected !== p.selected && window.matchMedia('(max-width: 899px)').matches && performance.now() - last < 700 && st.tourStep === null && !isRankSelecting()) useStore.setState({ phoneTab: 'site' });
     });
     return () => { window.removeEventListener('pointerdown', down, true); un(); };
   }, []);

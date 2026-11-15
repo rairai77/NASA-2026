@@ -113,7 +113,9 @@ candidates 0.14 s in WASM (Node); whole-Moon unfiltered coarse pass over 583,200
 
 **Mission replay** (`pipeline/missions_pred.py` → `data/missions_pred.json`; horizon from the finest DEM covering each
 site, 15-min steps). Delta = our predicted local sunset (Sun fraction 0.5 against the terrain horizon) minus the reported
-end of operations from press releases (`data-src/SOURCES.md`, uncertain by hours):
+end of operations from press releases (`data-src/SOURCES.md`, uncertain by hours). Read this as a consistency check, not a
+sunset test: Chandrayaan-3 and Blue Ghost 1 shut down within 4 h of our predicted sunset, but a shutdown is an operator or
+battery decision. IM-1 is shown for completeness only and is not comparable:
 
 | Mission | Lat | DEM | Reported end | Predicted sunset | Delta | Reading |
 |---|---|---|---|---|---|---|
@@ -123,4 +125,4 @@ end of operations from press releases (`data-src/SOURCES.md`, uncertain by hours
 
 Blue Ghost 1 also saw the 2025-03-14 total eclipse of the Sun by Earth; the engine's eclipse-aware prediction marks that
 dark period (2025-03-14 05:40 UTC) separately from sunset. SLIM, IM-2 and Hakuto-R M2 ended in landing anomalies, so
-their deltas (+275 h, +302 h, +313 h) are not prediction errors.
+their deltas (+275 h, +302 h, +313 h) are not prediction errors; the same goes for IM-1's +42.3 h.

@@ -35,7 +35,7 @@ export function Welcome() {
         <span className="welcome-x"><IconButton icon={X} label="Close" tip="left" onClick={dismissWelcome} /></span>
         <span className="welcome-logo" aria-hidden />
         <h1 id="welcome-h">Where on the Moon do the Sun and Earth stay up?</h1>
-        <p className="welcome-lead">Landers need sunlight for power and a line of sight to Earth for radio. At the lunar poles both depend on mountains and crater rims, so we compute it from real terrain and ephemerides.</p>
+        <p className="welcome-lead">Landers need sunlight for power and a line of sight to Earth for radio. At the lunar poles both depend on mountains and crater rims, so we compute it from real terrain and NASA Sun and Earth positions.</p>
         <p className="welcome-lead">Ask a question in plain words, or build one with chips, and get ranked sites you can inspect, check against real missions and stand on.</p>
         <div className="welcome-ex" role="group" aria-label="Example questions">
           {EXAMPLE_LIST.slice(0, 3).map((e) => (

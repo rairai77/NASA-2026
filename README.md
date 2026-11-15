@@ -10,7 +10,7 @@ Why trust it (details in [`docs/VALIDATION.md`](docs/VALIDATION.md)):
 
 - **r = 0.976** between our sunlit fraction and NASA PGDA average illumination over 72,324 one-km cells at 85-90°S.
 - **IoU 0.81** between our "never lit" cells and the published permanent-shadow mask (97.7% of cells agree).
-- **Chandrayaan-3's sunset predicted within 3.6 h** in a replay of real missions (IM-1 +42.3 h, Blue Ghost 1 -3.4 h).
+- **Mission replay is consistent with real landers:** Chandrayaan-3 and Blue Ghost 1 shut down within 4 h of our predicted sunset (+3.6 h, -3.4 h). This is a consistency check, not a sunset test; IM-1 tipped and ended early, and SLIM, IM-2 and Hakuto-R M2 ended in landing anomalies, so they are not compared.
 
 **Live demo:** https://lunar-site-navigator.cutenitki.workers.dev &nbsp;·&nbsp; **Repository:** https://github.com/rairai77/NASA-2026 (MIT)
 

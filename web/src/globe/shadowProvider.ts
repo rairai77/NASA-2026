@@ -52,6 +52,10 @@ export class ShadowImageryProvider {
   private halfM: number; private pixelM: number; private feather = 0.05; private maxAlpha = 0.92;
   private blank?: HTMLCanvasElement;
   private disposed = false;
+  /** Called (debounced) whenever every queued tile job of this provider has finished. */
+  onSettled?: () => void;
+  private pending = 0;
+  private settleTimer: ReturnType<typeof setTimeout> | undefined;
   private patchAng: number; // angular radius of the round patch (rad)
   private flat: number;
   private stats = { tiles: 0, drawn: 0, ms: 0, max: 0 };
@@ -72,6 +76,12 @@ export class ShadowImageryProvider {
     // doesn't read as a dark disc against the (uniformly lit) base mosaic. Local patches stay crisp.
     this.feather = patch.sizeKm > 200 ? 0.14 : 0.05;
     this.maxAlpha = patch.sizeKm > 200 ? 0.86 : 0.92;
+    // Night (Sun below the local horizon): the globe's own Lambert term already darkens the whole patch, so the
+    // overlay backs off to keep a faint earthshine floor instead of pure black.
+    const sunEl = patch.sunEl ?? 2;
+    const day = Math.max(0, Math.min(1, (sunEl + 2) / 4)); // 0 at <= -2 deg, 1 at >= +2 deg
+    this.maxAlpha *= 0.5 + 0.5 * day;
+    this.feather = Math.max(this.feather, 0.06); // soften the square edge a little more
     // A level-L geographic tile pixel is ~R*pi/2^L/256 m; past the patch resolution Cesium upsamples.
     this.maximumLevel = Math.max(1, Math.min(16, Math.ceil(Math.log2((R * Math.PI) / TS / this.pixelM)) + 1));
     // Bounding rectangle of the (round) patch: sample its rim through the inverse gnomonic map.
@@ -98,7 +108,7 @@ export class ShadowImageryProvider {
   }
 
   /** Drop queued tile jobs and tables; call when the layer is removed. */
-  dispose() { this.disposed = true; this.colCache.clear(); }
+  dispose() { this.disposed = true; this.colCache.clear(); clearTimeout(this.settleTimer); }
 
   private blankTile() {
     if (!this.blank) { this.blank = document.createElement('canvas'); this.blank.width = this.blank.height = 1; }
@@ -108,8 +118,19 @@ export class ShadowImageryProvider {
   requestImage(x: number, y: number, level: number): Promise<HTMLCanvasElement> {
     const r = this.tilingScheme.tileXYToRectangle(x, y, level);
     if (this.disposed || !Rectangle.intersection(r, this.rectangle) || !this.tileMayTouchPatch(r)) return Promise.resolve(this.blankTile());
+    this.pending++;
+    clearTimeout(this.settleTimer);
+    const done = () => {
+      if (--this.pending > 0) return;
+      clearTimeout(this.settleTimer);
+      this.settleTimer = setTimeout(() => { if (!this.disposed && this.pending === 0) this.onSettled?.(); }, 150);
+    };
     return new Promise((resolve) => {
-      queue.push({ dead: () => this.disposed, skip: () => resolve(this.blankTile()), run: () => resolve(this.renderTile(x, level, r)) });
+      queue.push({
+        dead: () => this.disposed,
+        skip: () => { resolve(this.blankTile()); done(); },
+        run: () => { resolve(this.renderTile(x, level, r)); done(); },
+      });
       schedule();
     });
   }

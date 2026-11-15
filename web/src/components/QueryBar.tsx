@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowDown, ArrowDownNarrowWide, ArrowUp, ArrowUpWideNarrow, CalendarDays, Funnel, MapPin, Plus, RadioTower, Rocket, Search, SlidersHorizontal,
   Sparkles, Telescope, TriangleAlert, X, Zap, GripVertical,
@@ -6,35 +6,43 @@ import {
 import type { Query } from '../engine/api.ts';
 import { defaultQuery, describeRegion, fmtWindowIncl, mergeQuery, objectiveText, regionIsCoarse } from '../query/query.ts';
 import { metricLabel, fmtMetric, METRIC_BY_NAME } from '../query/metrics.ts';
-import { applyNasaScreening, freshAnswer, parseText, patchQuery, runRank, setPanel, setQuery, useStore } from '../store.ts';
+import { applyNasaScreening, freshAnswer, parseText, patchQuery, runExampleSlip, runRank, setPanel, setQuery, toast, useStore } from '../store.ts';
 import { FilterEditor, ObjectiveEditor, RegionEditor, WindowEditor, newFilter, newObjective } from './editors.tsx';
 import { Button, IconButton, NumInput, Popover, Spinner, useEscape, useWheelHScroll, type IconType } from './ui.tsx';
 import { PanelFields, panelSummary } from './PowerPanel.tsx';
 
-export interface Example { label: string; sub: string; text: string; icon: IconType; query: Query }
+export interface Example {
+  label: string; sub: string; text: string; icon: IconType; query: Query;
+  /** launch-slip example: this query is ranked first and saved as scenario A; `query` is then ranked and saved as B */
+  first?: Query;
+}
+const SLOPE10 = { metric: 'slope_deg', op: '<=' as const, value: 10 };
 /** Hand-written queries (same shape as the parser output) so the examples never depend on the language parser. */
 const ex = (partial: Partial<Query>): Query => mergeQuery(defaultQuery('2026-11-15'), partial);
 export const EXAMPLE_LIST: Example[] = [
-  { label: 'CLPS slipped to June 2028', sub: 'Best south pole sites, 6+ days of Sun and Earth', icon: Rocket,
-    text: 'Our CLPS launch slipped from March to June 2028 — best south pole sites with at least 6 days of continuous sun and Earth',
+  { label: 'Launch slips to June 2028', sub: 'Re-ranked for June, compared with March', icon: Rocket,
+    text: 'Our CLPS launch slipped from March to June 2028: re-rank the best south pole sites with at least 6 days of continuous sun and Earth, and compare with March',
+    first: ex({ window: { start: '2028-03-01', end: '2028-04-01' }, region: { type: 'polar', min_lat: -90, max_lat: -85 },
+      filters: [{ metric: 'longest_both_h', op: '>=', value: 144 }, SLOPE10], objectives: [{ metric: 'both_hours', dir: 'max' }] }),
     query: ex({ window: { start: '2028-06-01', end: '2028-07-01' }, region: { type: 'polar', min_lat: -90, max_lat: -85 },
-      filters: [{ metric: 'longest_both_h', op: '>=', value: 144 }], objectives: [{ metric: 'both_hours', dir: 'max' }] }) },
+      filters: [{ metric: 'longest_both_h', op: '>=', value: 144 }, SLOPE10], objectives: [{ metric: 'both_hours', dir: 'max' }] }) },
   { label: 'Flattest near Shackleton', sub: 'Shortest night in 2027', icon: Telescope, text: 'Flattest site near Shackleton with the shortest night in 2027',
     query: ex({ window: { start: '2027-01-01', end: '2028-01-01' }, region: { type: 'circle', lat: -89.54, lon: 129.78, radius_km: 30 },
-      objectives: [{ metric: 'slope_deg', dir: 'min' }, { metric: 'longest_dark_h', dir: 'min' }] }) },
+      filters: [SLOPE10], objectives: [{ metric: 'slope_deg', dir: 'min' }, { metric: 'longest_dark_h', dir: 'min' }] }) },
   { label: 'Apollo 11 vs Malapert', sub: 'Side by side, December 2026', icon: MapPin, text: 'Compare Apollo 11 with Malapert Massif for December 2026',
     query: ex({ window: { start: '2026-12-01', end: '2027-01-01' }, region: { type: 'sites', ids: ['apollo11', 'art3_malapert_massif'] },
       objectives: [{ metric: 'sun_hours', dir: 'max' }] }) },
   { label: 'Longest sunlight in 2027', sub: 'Most hours of Sun at the pole', icon: Sparkles, text: 'Sites at the south pole with the most sun hours in 2027',
-    query: ex({ window: { start: '2027-01-01', end: '2028-01-01' }, region: { type: 'polar', min_lat: -90, max_lat: -85 }, objectives: [{ metric: 'sun_hours', dir: 'max' }] }) },
+    query: ex({ window: { start: '2027-01-01', end: '2028-01-01' }, region: { type: 'polar', min_lat: -90, max_lat: -85 }, filters: [SLOPE10], objectives: [{ metric: 'sun_hours', dir: 'max' }] }) },
   { label: 'Sun and Earth, March 2027', sub: 'Most hours with both up', icon: CalendarDays, text: 'Best south pole sites in March 2027 with the most hours of Sun and Earth together',
-    query: ex({ window: { start: '2027-03-01', end: '2027-04-01' }, region: { type: 'polar', min_lat: -90, max_lat: -85 }, objectives: [{ metric: 'both_hours', dir: 'max' }] }) },
+    query: ex({ window: { start: '2027-03-01', end: '2027-04-01' }, region: { type: 'polar', min_lat: -90, max_lat: -85 }, filters: [SLOPE10], objectives: [{ metric: 'both_hours', dir: 'max' }] }) },
 ];
 export const EXAMPLES = EXAMPLE_LIST.map((e) => e.text);
 
 /** Run an example: its sentence goes in the Ask box, its stored query is ranked directly (no parser round trip). */
 export function runExample(e: Example) {
-  useStore.setState({ askText: e.text, failedQuestion: null, unparsed: [], warnings: [], builderOpen: false });
+  useStore.setState({ askText: e.text, failedQuestion: null, unparsed: [], warnings: [], builderOpen: false, leftTab: 'results', phoneTab: 'results' });
+  if (e.first) { runExampleSlip(JSON.parse(JSON.stringify(e.first)) as Query, JSON.parse(JSON.stringify(e.query)) as Query); return; }
   setQuery(JSON.parse(JSON.stringify(e.query)) as Query, false);
   freshAnswer();
   runRank();
@@ -63,6 +71,12 @@ function ChipShell({ kind, label, value, icon: Ic, children, onRemove, extra, dr
 
 const Word = ({ children }: { children: ReactNode }) => <span className="qs-word">{children}</span>;
 const opSym = (op: string) => op.replace('<=', '≤').replace('>=', '≥');
+/** 48 h or more reads in days with the hours kept: "6 d (144 h)" */
+function filterValueText(metric: string, v: number): string {
+  const t = fmtMetric(metric, v);
+  const m = /^(-?\d+) h \((-?[\d.]+) d\)/.exec(t);
+  return m ? `${m[2].replace(/\.0$/, '')} d (${m[1]} h)` : t.replace(/\s*\(.*\)/, '');
+}
 
 export function Chips() {
   const q = useStore((s) => s.query);
@@ -98,8 +112,12 @@ export function Chips() {
             },
             onDragEnd: () => setDragIdx(null),
           }}
-          extra={<button className="chip-dir" title={o.dir === 'max' ? 'Maximise (click for minimise)' : 'Minimise (click for maximise)'} aria-label={`Direction ${o.dir}`}
-            onClick={() => setObj(q.objectives.map((x, j) => (j === i ? { ...x, dir: x.dir === 'max' ? 'min' : 'max' } : x)))}>
+          extra={<button className="chip-dir" title={o.dir === 'max' ? 'Switch to fewest' : 'Switch to most'} aria-label={o.dir === 'max' ? 'Switch to fewest' : 'Switch to most'}
+            onClick={() => {
+              const dir = o.dir === 'max' ? 'min' : 'max';
+              setObj(q.objectives.map((x, j) => (j === i ? { ...x, dir } : x)));
+              toast(`Now ranking by ${dir === 'min' ? 'fewest' : 'most'} ${metricLabel(o.metric, edu)}.`);
+            }}>
             {o.dir === 'max' ? <ArrowUpWideNarrow aria-hidden /> : <ArrowDownNarrowWide aria-hidden />}</button>}
           onRemove={q.objectives.length > 1 ? () => setObj(q.objectives.filter((_, j) => j !== i)) : undefined}>
           <ObjectiveEditor o={o} onChange={(no) => setObj(q.objectives.map((x, j) => (j === i ? no : x)))} />
@@ -111,7 +129,7 @@ export function Chips() {
       {q.filters.map((f, i) => (
         <ChipShell key={`f${i}`} kind="filter" icon={Funnel} label={metricLabel(f.metric, edu)}
           warn={coarse && METRIC_BY_NAME[f.metric]?.polarOnly ? `${metricLabel(f.metric)} does not exist on the 10 km global grid: this filter removes every result` : undefined}
-          value={`${opSym(f.op)} ${fmtMetric(f.metric, f.value).replace(/\s*\(.*\)/, '')}`}
+          value={`${opSym(f.op)} ${filterValueText(f.metric, f.value)}`}
           onRemove={() => patchQuery({ filters: q.filters.filter((_, j) => j !== i) })}>
           <FilterEditor f={f} onChange={(nf) => patchQuery({ filters: q.filters.map((x, j) => (j === i ? nf : x)) })} />
         </ChipShell>
@@ -133,35 +151,27 @@ export function Chips() {
         <div className="ed">
           <label>Observer height above terrain (m)<NumInput value={q.height_m} min={0} step={0.5} onChange={(height_m) => patchQuery({ height_m })} /></label>
           <div className="row">
-            <label>Results (top k)<NumInput value={q.k} min={1} max={50} onChange={(k) => patchQuery({ k: Math.round(Math.max(1, Math.min(50, k))) })} /></label>
-            <label>Min separation (km)<NumInput value={q.min_separation_km} min={0} step={0.5} onChange={(min_separation_km) => patchQuery({ min_separation_km })} /></label>
+            <label>How many sites to show<NumInput value={q.k} min={1} max={50} onChange={(k) => patchQuery({ k: Math.round(Math.max(1, Math.min(50, k))) })} /></label>
+            <label>Keep sites at least … km apart<NumInput value={q.min_separation_km} min={0} step={0.5} onChange={(min_separation_km) => patchQuery({ min_separation_km })} /></label>
           </div>
           <label>Ordering
             <select value={q.mode} onChange={(e) => patchQuery({ mode: e.target.value as Query['mode'], weights: e.target.value === 'weighted' ? q.objectives.map(() => 1) : null })}>
-              <option value="lexicographic">Lexicographic (objectives in order)</option><option value="weighted">Weighted</option>
+              <option value="lexicographic">Strict priority (1st goal, then 2nd)</option><option value="weighted">Blend goals by weight</option>
             </select>
           </label>
           {q.mode === 'weighted' && q.objectives.map((o, i) => (
             <label key={i}>{metricLabel(o.metric, edu)} weight<NumInput value={q.weights?.[i] ?? 1} step={0.1} min={0} onChange={(w) => patchQuery({ weights: q.objectives.map((_, j) => (j === i ? w : q.weights?.[j] ?? 1)) })} /></label>
           ))}
-        </div>
-      </ChipShell>
-      <Popover className="chipwrap pop-right" trigger={(open, toggle) => (
-        <span className={`chip k-preset ${open ? 'open' : ''}`}>
-          <button className="chip-main" onClick={toggle} aria-expanded={open}><Sparkles aria-hidden /><span className="chip-v">Presets</span></button>
-        </span>
-      )}>
-        <div className="ed presets">
           <div className="ui-section-title">Presets</div>
-          <button className="preset-item" onClick={() => { applyNasaScreening(); document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); }}>
+          <button className="preset-item" data-close-popover onClick={applyNasaScreening}>
             <Sparkles aria-hidden /><span><b>NASA Artemis screening (approx.)</b>
               <small>Slope ≤ 10°, Earth visible ≥ 25% and Sun ≥ 5% of the window, within 6° of the pole. Approximates public Artemis criteria.</small></span>
           </button>
         </div>
-      </Popover>
+      </ChipShell>
       {unparsed.map((u, i) => (
         <span key={i} className="chip unparsed" title="Not understood by the parser; ignored">
-          <span className="chip-main">{u}</span>
+          <span className="chip-main">Ignored: {u}</span>
           <button className="chip-x" aria-label="Dismiss" onClick={() => useStore.setState({ unparsed: unparsed.filter((_, j) => j !== i) })}><X aria-hidden /></button>
         </span>
       ))}
@@ -171,8 +181,21 @@ export function Chips() {
 
 export function QueryStrip() {
   const ref = useRef<HTMLDivElement>(null);
+  const [more, setMore] = useState(false);
   useWheelHScroll(ref);
-  return <div className="qstrip" ref={ref}><Chips /></div>;
+  // right-edge fade while chips are hidden past the right edge
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const upd = () => setMore(el.scrollWidth - el.clientWidth - el.scrollLeft > 4);
+    upd();
+    el.addEventListener('scroll', upd, { passive: true });
+    const ro = new ResizeObserver(upd);
+    ro.observe(el);
+    if (el.firstElementChild) ro.observe(el.firstElementChild);
+    return () => { el.removeEventListener('scroll', upd); ro.disconnect(); };
+  }, []);
+  return <div className="qstrip" ref={ref} data-more={more ? '1' : undefined}><Chips /></div>;
 }
 
 /** The hero control: natural-language question with examples on focus. */
@@ -188,7 +211,7 @@ export function QueryInput({ onDone }: { onDone?: () => void }) {
       <Search className="ask-ico" aria-hidden />
       <input
         ref={ref} className="qtext" value={text} maxLength={500} aria-label="Describe your mission request" autoComplete="off"
-        placeholder="Ask: best south pole sites in June 2028 with 6 days of Sun and Earth"
+        placeholder="Ask about a site, a date or a mission…"
         onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter') submit(text); else if (e.key === 'Escape') { ref.current?.blur(); } }}

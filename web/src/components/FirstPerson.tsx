@@ -6,7 +6,7 @@ import { COLORS } from './Timeline.tsx';
 import { Globe as GlobeIcon, Image as ImageIcon, Mountain, Sun, X } from 'lucide-react';
 import { getFirstPersonView, getFirstPersonViewer, lookAt, onFirstPersonView, setFov as setFov3d, setSkyline } from '../globe/firstPerson3d.ts';
 import { placeFor, shortName } from '../lib/places.ts';
-import { Button, Segmented, Tag } from './ui.tsx';
+import { Button, IconButton, Segmented, Tag } from './ui.tsx';
 
 const D2R = Math.PI / 180;
 const SUN_R = 0.2666; // deg
@@ -392,6 +392,14 @@ export function FirstPerson() {
     else setMode('3d');
   };
   const viewer3d = getFirstPersonViewer();
+  // Sun below the skyline: offer a jump to the next time at least half of the Sun's disc is up
+  let sunriseT: number | null = null;
+  if (now && !now.sunUp && d?.vis && d.vis.t.length > 1) {
+    const v = d.vis, step = v.t[1] - v.t[0];
+    for (let i = Math.max(0, Math.floor((cursor - v.t[0]) / step) + 1); i < v.t.length; i++) if (v.sunFrac[i] >= 0.5) { sunriseT = v.t[i]; break; }
+  }
+  const lookSun = () => now && center(now.sunAz, now.sunEl);
+  const lookEarth = () => now && center(now.earthAz, now.earthEl);
   const info = (
     <div className="fp-card">
       <div>
@@ -426,20 +434,35 @@ export function FirstPerson() {
       <div className="fp-close"><Button className="fp-back" icon={X} onClick={close} aria-label="Back to map (Esc)"><span className="fp-back-lbl">Back to map (Esc)</span></Button></div>
       <div className="fp-bottom">
         {!is3d && vex === 3 && <Tag tone="warn">Vertical scale exaggerated 3{'\u00d7'} (Sun and Earth sizes stay true)</Tag>}
+        {sunriseT !== null && (
+          <Button className="fp-jump" size="sm" icon={Sun} onClick={() => setCursor(sunriseT!)} title="Move the time cursor to the next sunrise at this site">Jump to next sunrise</Button>
+        )}
         <div className="fp-note">
           <span>{touch ? <>drag to look {'\u00b7'} pinch to zoom</> : <>drag to look {'\u00b7'} wheel to zoom</>} ({(is3d ? v3.fovDeg : fov).toFixed(0)}{'\u00b0'} FOV){phone ? '' : <> {'\u00b7'} scrub the timeline below</>}</span>
-          {is3d && v3.skyline && <span><b>Teal line = computed skyline (LOLA)</b>, the authoritative horizon; distant 3D terrain is rendered coarser, so ridges can differ.</span>}
+          {is3d && v3.skyline && <span className="fp-note-long"><b>Teal line = computed skyline (LOLA)</b>, the authoritative horizon; distant 3D terrain is rendered coarser, so ridges can differ.</span>}
         </div>
         <div className="fp-row">
+          {phone ? (
+            <div className="fp-ctl fp-ctl--icons" role="toolbar" aria-label="Look-around controls">
+              <IconButton tip="none" solid icon={Sun} label="Look at Sun" onClick={lookSun} />
+              <IconButton tip="none" solid icon={GlobeIcon} label="Look at Earth" onClick={lookEarth} />
+              {is3d
+                ? <IconButton tip="none" solid icon={Mountain} label={v3.skyline ? 'Hide computed skyline' : 'Show computed skyline'} active={v3.skyline} onClick={() => viewer3d && setSkyline(viewer3d, !v3.skyline)} />
+                : <Segmented label="Vertical exaggeration" value={String(vex) as '1' | '3'} onChange={(x) => setVex(x === '1' ? 1 : 3)} options={[{ value: '1', label: '1\u00d7' }, { value: '3', label: '3\u00d7' }]} />}
+              <IconButton tip="none" solid icon={ImageIcon} label={is3d ? 'Switch to 2D panorama' : 'Switch to 3D view'} active={!is3d} onClick={toggleMode} />
+            </div>
+          ) : (
           <div className="fp-ctl">
-            <Button size="sm" icon={Sun} onClick={() => now && center(now.sunAz, now.sunEl)}>Look at Sun</Button>
-            <Button size="sm" icon={GlobeIcon} onClick={() => now && center(now.earthAz, now.earthEl)}>Look at Earth</Button>
+            <Button size="sm" icon={Sun} onClick={lookSun}>Look at Sun</Button>
+            <Button size="sm" icon={GlobeIcon} onClick={lookEarth}>Look at Earth</Button>
             {is3d ? (
               <>
-                <label className="fp-fov" title="Field of view (mouse wheel)">
-                  <span>FOV {v3.fovDeg.toFixed(0)}{'\u00b0'}</span>
-                  <input type="range" min={15} max={100} step={1} value={v3.fovDeg} aria-label="Field of view" onChange={(e) => viewer3d && setFov3d(viewer3d, Number(e.target.value))} />
-                </label>
+                {!touch && (
+                  <label className="fp-fov" title="Field of view (mouse wheel)">
+                    <span>FOV {v3.fovDeg.toFixed(0)}{'\u00b0'}</span>
+                    <input type="range" min={15} max={100} step={1} value={v3.fovDeg} aria-label="Field of view" onChange={(e) => viewer3d && setFov3d(viewer3d, Number(e.target.value))} />
+                  </label>
+                )}
                 <Button size="sm" icon={Mountain} active={v3.skyline} onClick={() => viewer3d && setSkyline(viewer3d, !v3.skyline)} title="Computed skyline overlay from LOLA elevation data">Skyline</Button>
               </>
             ) : (
@@ -447,13 +470,15 @@ export function FirstPerson() {
             )}
             <Button size="sm" icon={ImageIcon} active={!is3d} onClick={toggleMode} title="Switch between the 3D view and the projected 2D panorama">2D panorama</Button>
           </div>
+          )}
         </div>
       </div>
       {phone && (
-        <div className="fp-time">
+        <label className="fp-time">
+          <span className="fp-time-lbl">Time</span>
           <input type="range" min={win[0]} max={win[1]} step={60} value={Math.min(win[1], Math.max(win[0], cursor))} aria-label={`Time (UTC): ${fmtUTC(cursor)}`}
             onChange={(e) => setCursor(Number(e.target.value))} />
-        </div>
+        </label>
       )}
       {is3d && <Ribbon sunAz={now?.sunAz} earthAz={now?.earthAz} />}
       {!d?.horizon && <div className="fp-flag"><Tag tone="info">Loading horizon{'…'}</Tag></div>}

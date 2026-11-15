@@ -4,7 +4,7 @@ import type { Query, RankResult, VisResult } from '../engine/api.ts';
 import { getEngine } from '../engine/client.ts';
 import { placeFor } from '../lib/places.ts';
 import { METRIC_BY_NAME, metricLabel } from '../query/metrics.ts';
-import { describeRegion } from '../query/query.ts';
+import { describeRegion, fmtWindowIncl } from '../query/query.ts';
 import { MAX_COMPARE, flyTo, patchQuery, resultId, runRank, select, setLayerState, toast, toggleCompare, useStore, windowOf, type LeftTab, type Target } from '../store.ts';
 import { DiffTab } from './DiffTab.tsx';
 import { LaneStrip } from './LaneStrip.tsx';
@@ -32,7 +32,7 @@ export function useSpark(t: Target | undefined, win: [number, number]) {
   return v;
 }
 
-export const COMPARE_TIP = 'Add this site as an extra row on the timeline so you can compare it with others';
+export const COMPARE_TIP = 'The selected site is always on the timeline. Pin it to keep it there when you select another.';
 
 /** Ranks of the sites in the latest ranking only (id -> rank). Anything else is from an earlier search. */
 export function useCurrentRanks(): Map<string, number> {
@@ -44,25 +44,25 @@ export function useCurrentRanks(): Map<string, number> {
   }, [results]);
 }
 
-/** Add / remove a site as a timeline row, with a toast on add. */
+/** Pin / unpin a site as a timeline row (the compare list), with a toast on pin. */
 export function toggleTimeline(id: string) {
   const was = useStore.getState().compare.includes(id);
   toggleCompare(id);
   const now = useStore.getState().compare;
-  if (!was && now.includes(id)) toast(`Added to timeline (${now.length} of ${MAX_COMPARE})`);
+  if (!was && now.includes(id)) toast(`Pinned to timeline (${now.length} of ${MAX_COMPARE})`);
 }
 
-/** "Add to timeline" / "On timeline": a site as an extra row on the timeline (the compare list). */
+/** "Pin to timeline" / "Pinned": a site as an extra row on the timeline (the compare list). */
 export function TimelineToggle({ id, size = 'sm', compact }: { id: string; size?: 'sm' | 'md'; compact?: boolean }) {
   const on = useStore((s) => s.compare.includes(id));
   const full = useStore((s) => s.compare.length >= MAX_COMPARE);
-  const tip = on ? 'On timeline. Click to remove this site from the timeline' : full ? `Timeline is full (${MAX_COMPARE} sites). Remove one first.` : COMPARE_TIP;
+  const tip = on ? 'Pinned to the timeline. Click to unpin' : full ? `Timeline is full (${MAX_COMPARE} sites). Remove one first.` : COMPARE_TIP;
   return (
     <span onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
       {compact
-        ? <IconButton icon={on ? Check : Plus} label={on ? 'On timeline (click to remove)' : 'Add to timeline'} size={size} active={on} tip="left" className="pn-add" disabled={!on && full} onClick={() => toggleTimeline(id)} />
+        ? <IconButton icon={on ? Check : Plus} label={on ? 'Pinned to timeline (click to unpin)' : 'Pin to timeline'} size={size} active={on} tip="left" className="pn-add" disabled={!on && full} onClick={() => toggleTimeline(id)} />
         : <Tooltip content={tip} side="bottom" wrap>
-            <Button size="sm" icon={on ? Check : Plus} active={on} className="pn-add" disabled={!on && full} aria-label={on ? 'On timeline' : `Add to timeline: ${tip}`} onClick={() => toggleTimeline(id)}>{on ? 'On timeline' : 'Add to timeline'}</Button>
+            <Button size="sm" icon={on ? Check : Plus} active={on} className="pn-add" disabled={!on && full} aria-label={on ? 'Pinned' : `Pin to timeline: ${tip}`} onClick={() => toggleTimeline(id)}>{on ? 'Pinned' : 'Pin to timeline'}</Button>
           </Tooltip>}
     </span>
   );
@@ -79,7 +79,7 @@ function statValue(name: string, v: number | undefined): { value: string; unit: 
   const u = m?.unit ?? '';
   return { value: v.toFixed(m?.digits ?? 1), unit: u };
 }
-const toneOf = (name: string): 'sun' | 'earth' | 'ok' | undefined => (/^(sun|longest_sun|mean_sun|min_sun)/.test(name) ? 'sun' : /earth|comms|both/.test(name) ? 'earth' : 'ok');
+const toneOf = (name: string): 'sun' | 'earth' | 'both' | 'ok' | undefined => (/^(sun|longest_sun|mean_sun|min_sun)/.test(name) ? 'sun' : /both/.test(name) ? 'both' : /earth|comms/.test(name) ? 'earth' : 'ok');
 
 const isHours = (name: string) => METRIC_BY_NAME[name]?.unit === 'h';
 /** Durations: 48 h or more in days with one decimal, shorter in hours. */
@@ -128,7 +128,7 @@ export function explainRanking(res: RankResult, q: Query, winH: number): { text:
   return { text: `${lead} (${pair}).`, decider: m };
 }
 
-function CardStat({ name, v, winH, coarse, decisive, tone }: { name: string; v: number | undefined; winH: number; coarse?: boolean; decisive?: boolean; tone?: 'sun' | 'earth' | 'ok' }) {
+function CardStat({ name, v, winH, coarse, decisive, tone }: { name: string; v: number | undefined; winH: number; coarse?: boolean; decisive?: boolean; tone?: 'sun' | 'earth' | 'both' | 'ok' }) {
   const edu = useStore((s) => s.educator);
   const ok = v !== undefined && v !== null && !Number.isNaN(v);
   const hrs = ok && isHours(name);
@@ -159,7 +159,11 @@ function ResultCard({ id, rank, coarse, cols, win, decider }: { id: string; rank
   const vis = useSpark(t, win);
   const place = useMemo(() => (t ? (t.kind === 'site' ? null : placeFor(t.lat, t.lon, sites)) : null), [t, sites]);
   if (!t) return null;
-  const choose = () => { select(id); flyTo(id); };
+  const choose = () => {
+    select(id); flyTo(id);
+    // on a phone the card is the way into the Site sheet, even when it is already selected
+    if (window.matchMedia('(max-width: 899px)').matches) useStore.setState({ phoneTab: 'site' });
+  };
   const winH = (win[1] - win[0]) / 3600;
   const title = place?.title ?? t.name;
   const sub = [place?.distLabel, t.kind === 'site' && t.group ? t.group : ''].filter(Boolean).join(' · ');
@@ -194,6 +198,8 @@ function ResultsTab() {
   const ranking = useStore((s) => s.ranking);
   const progress = useStore((s) => s.progress);
   const rankSkipped = useStore((s) => s.rankSkipped);
+  const scenA = useStore((s) => s.scenA);
+  const scenB = useStore((s) => s.scenB);
   const win = useMemo(() => windowOf(q), [q]);
   const why = useMemo(() => (results && results.results.length ? explainRanking(results, q, (win[1] - win[0]) / 3600) : null), [results, q, win]);
   const cols = useMemo(() => {
@@ -257,8 +263,8 @@ function ResultsTab() {
 
   const n = results.results.length;
   const res = results.resolutionM;
-  const grid = results.coarse ? `~${Math.round(res / 1000)} km cells (coarse)` : res >= 1000 ? `${res / 1000} km grid` : `${res} m terrain`;
-  const refine = results.coarse ? '6 h steps' : `refined at 15 min`;
+  const grid = results.coarse ? `checked in ~${Math.round(res / 1000)} km cells (coarse)` : res >= 1000 ? `checked every ${res / 1000} km` : `checked every ${res} m`;
+  const refine = results.coarse ? 'timed to 6 h' : 'timed to 15 min';
   return (
     <div className="pn-body">
       <div className="pn-head">
@@ -267,6 +273,7 @@ function ResultsTab() {
         </h2>
         <p className="pn-sub">{regionLabel(q)} {'·'} {grid} {'·'} {refine}{results.model === 'mock' ? ' · demo' : ''}</p>
         {why && <p className="pn-why">{why.text}</p>}
+        {scenA && scenB && <button className="pn-link" onClick={() => useStore.setState({ leftTab: 'diff' })}>Compare with {fmtWindowIncl(scenA.query.window.start, scenA.query.window.end)} {'→'}</button>}
       </div>
       {results.coarse && (
         <div className="pn-warn" role="note">
@@ -292,12 +299,15 @@ function SitesTab() {
   const [closed, setClosed] = useState<Record<string, boolean>>({});
   const groups = useMemo(() => {
     const g = new Map<string, typeof sites>();
+    const polar = (s: (typeof sites)[number]) => s.lat < -80 && (s.representative || s.group === 'Artemis III regions');
+    g.set('South pole candidates', []);
     for (const s of sites) {
       if (filter && !`${s.name} ${s.group}`.toLowerCase().includes(filter.toLowerCase())) continue;
-      if (!g.has(s.group)) g.set(s.group, []);
-      g.get(s.group)!.push(s);
+      const key = polar(s) ? 'South pole candidates' : s.group;
+      if (!g.has(key)) g.set(key, []);
+      g.get(key)!.push(s);
     }
-    return [...g.entries()];
+    return [...g.entries()].filter(([, l]) => l.length);
   }, [sites, filter]);
   return (
     <div className="pn-body">
@@ -305,7 +315,7 @@ function SitesTab() {
         <Search aria-hidden />
         <input type="search" placeholder="Search sites" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Search sites" />
       </label>
-      <p className="pn-hint">Use <b>Add to timeline</b> <Plus aria-hidden className="pn-inline-ic" /> to show up to {MAX_COMPARE} sites as rows on one timeline.</p>
+      <p className="pn-hint">Use <b>Pin to timeline</b> <Plus aria-hidden className="pn-inline-ic" /> to show up to {MAX_COMPARE} sites as rows on one timeline.</p>
       {groups.map(([g, list]) => (
         <section key={g} className="pn-group">
           <button className="pn-group-h" onClick={() => setClosed({ ...closed, [g]: !closed[g] })} aria-expanded={!closed[g]}>
@@ -319,7 +329,7 @@ function SitesTab() {
                   onKeyDown={(e) => { if (e.key === 'Enter') { select(s.id); flyTo(s.id); } }}
                   onMouseEnter={() => useStore.setState({ hoveredId: s.id })} onMouseLeave={() => useStore.setState({ hoveredId: null })}>
                   <span className="pn-row-name">{s.name}</span>
-                  {s.representative && <Tag title="A single point stands in for a larger region">rep.</Tag>}
+                  {s.representative && <Tag title="A single point stands in for a larger region">Region centre</Tag>}
                   <TimelineToggle id={s.id} compact />
                 </li>
               ))}

@@ -41,8 +41,9 @@ export function countdowns(v: VisResult | undefined, t: number, windowEnd: numbe
     const e = nextEvent(v.events, t, up ? setKind : riseKind);
     const word = up ? `${noun}set` : `${noun}rise`;
     if (e) return { text: `${word} in ${fmtDur(e.t - t)}`, soon: e.t - t < 6 * 3600 };
-    const rest = fmtDur(windowEnd - t);
-    return { text: up ? `${noun} stays up for ≥ ${rest}` : `No ${noun.toLowerCase()}rise within window`, soon: false };
+    const h = (windowEnd - t) / 3600;
+    const rest = h >= 48 ? `${Math.floor(h / 24)} d+` : `${Math.max(0, Math.floor(h))} h+`;
+    return { text: up ? `${noun} stays up past the end of the window (${rest})` : `No ${noun.toLowerCase()}rise within window`, soon: false };
   };
   const sun = mk(s.sunUp, 'sunset', 'sunrise', 'Sun');
   const earth = mk(s.earthUp, 'earthset', 'earthrise', 'Earth');

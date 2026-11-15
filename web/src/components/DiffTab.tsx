@@ -3,6 +3,7 @@ import { ArrowDown, ArrowUp, FastForward, Save } from 'lucide-react';
 import { metricLabel, fmtMetric, TABLE_METRICS, STATIC_METRICS, METRIC_BY_NAME } from '../query/metrics.ts';
 import { parseWhen } from '../lib/time.ts';
 import { saveScenario, slipLaunch, useStore, type Scenario } from '../store.ts';
+import { fmtWindowIncl } from '../query/query.ts';
 import { placeFor } from '../lib/places.ts';
 import { Button } from './ui.tsx';
 import { LaneStrip } from './LaneStrip.tsx';
@@ -29,7 +30,7 @@ function Slot({ label, s }: { label: 'A' | 'B'; s: Scenario | null }) {
       </header>
       {s ? (
         <>
-          <small className="mono">{s.query.window.start.slice(0, 10)} {'→'} {s.query.window.end.slice(0, 10)} ({days(s)} d)</small>
+          <small className="mono">{fmtWindowIncl(s.query.window.start, s.query.window.end)} ({days(s)} d)</small>
           <LaneStrip vis={s.vis} win={winOf(s)} labels={false} label={`Scenario ${label} timeline`} />
         </>
       ) : <small>Nothing saved yet</small>}

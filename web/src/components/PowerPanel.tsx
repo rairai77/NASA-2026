@@ -5,7 +5,7 @@ import type { Panel, PanelKind, PowerResult } from '../engine/api.ts';
 import { getEngine } from '../engine/client.ts';
 import { fmtDur, HOUR } from '../lib/time.ts';
 import { patchQuery, seriesStep, setPanel, useStore, windowOf, type Target } from '../store.ts';
-import { Check, ChevronDown, ChevronRight, CircleCheck, CircleX, Settings2, Zap } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, CircleAlert, CircleCheck, Settings2, Zap } from 'lucide-react';
 import { palette, useTheme } from '../lib/theme.ts';
 import { Button, NumInput, Stat } from './ui.tsx';
 
@@ -85,10 +85,12 @@ export function PowerPanel({ target }: { target: Target }) {
       {state === 'error' && <p className="pn-err">{err}</p>}
       {res && (
         <>
-          <div className={`pn-verdict ${survives ? 'yes' : 'no'}`} role="status">
-            {survives ? <CircleCheck aria-hidden /> : <CircleX aria-hidden />}
+          <div className={`pn-verdict ${survives ? 'yes' : 'caution'}`} role="status">
+            {survives ? <CircleCheck aria-hidden /> : <CircleAlert aria-hidden />}
             <div>
-              <b>{survives ? 'Survives the longest night' : 'Does not survive the longest night'}</b>
+              <b>{survives
+                ? `The example lander (${fmtWh(battery)} battery) would get through this site's ${(res.longestDarkH / 24).toFixed(1)}-day night.`
+                : `The example lander (${fmtWh(battery)} battery) would run out during this site's ${(res.longestDarkH / 24).toFixed(1)}-day night. Set your own lander in the panel settings.`}</b>
               <small>{res.longestDarkH > 0
                 ? `Longest dark: ${fmtDur(res.longestDarkH * HOUR)}. Needs ${fmtWh(res.batteryWhNeeded)} usable (${panel.loadW} W ${'×'} ${res.longestDarkH.toFixed(0)} h / ${panel.depthOfDischarge}); you have ${fmtWh(battery)}.`
                 : 'No dark period in this window.'}</small>

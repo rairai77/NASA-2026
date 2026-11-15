@@ -234,6 +234,10 @@ export function scheduleRank(delay = 350) {
 }
 
 let rankSeq = 0;
+/** true while runRank itself changes the selection (the phone Site sheet only opens for a user's tap) */
+let rankSelecting = false;
+export const isRankSelecting = () => rankSelecting;
+function selectByRank(p: Partial<State>) { rankSelecting = true; try { set(p); } finally { rankSelecting = false; } }
 let keepRestoredSelection = false;
 /** a share link that carries its own cursor keeps it on the first ranking */
 let skipDaylightOnce = restored?.t != null;
@@ -302,7 +306,7 @@ export async function runRank() {
     if (ts.length) {
       const keepCursor = skipDaylightOnce; skipDaylightOnce = false;
       if (q.region.type === 'sites' && ts.length <= MAX_COMPARE) {
-        set({ compare: ts.map((t) => t.id), selected: ts[0].id });
+        selectByRank({ compare: ts.map((t) => t.id), selected: ts[0].id });
         if (!keepCursor && !s.replay) { flyTo(ts[0].id); void focusDaylight(ts[0].id, seq); }
       } else if (keepRestoredSelection) {
         keepRestoredSelection = false;
@@ -312,7 +316,7 @@ export async function runRank() {
         // a new #1: select and fly to it and put the cursor in its longest Sun-and-Earth stretch.
         // A chip edit that leaves #1 unchanged keeps the view and cursor where the user had them.
         const changed = s.selected !== ts[0].id;
-        set({ selected: ts[0].id });
+        selectByRank({ selected: ts[0].id });
         if (force || changed) {
           flyTo(ts[0].id);
           if (!keepCursor) void focusDaylight(ts[0].id, seq);
@@ -340,14 +344,15 @@ export async function parseText(text: string) {
     const j = (await res.json()) as { query?: unknown; unparsed?: string[]; warnings?: string[] };
     if (!j || typeof j.query !== 'object') throw new Error('bad response');
     const q = mergeQuery(defaultQuery(today), j.query);
-    set({ unparsed: j.unparsed ?? [], warnings: j.warnings ?? [], parsing: false, failedQuestion: null });
+    set({ unparsed: j.unparsed ?? [], warnings: j.warnings ?? [], parsing: false, failedQuestion: null, leftTab: 'results', phoneTab: 'results' });
+    if (j.unparsed?.length) toast(`I couldn\u2019t use \u201c${j.unparsed.join(', ')}\u201d, so that part was ignored.`);
     if (j.warnings?.length) toast(`Parser warnings: ${j.warnings.join('; ')}`);
     setQuery(q, false);
     freshAnswer();
     runRank();
   } catch (e) {
     console.warn('[parse] failed', e);
-    set({ parsing: false, builderOpen: true, askText: text, failedQuestion: text });
+    set({ parsing: false, builderOpen: true, askText: text, failedQuestion: text, leftTab: 'results', phoneTab: 'results' });
     setQuery(prefillFromText(text, get().query), true);
     toast('Couldn\u2019t read that question right now, so we opened the query builder.');
   }
@@ -527,6 +532,27 @@ export function slipLaunch(weeks: number) {
   keepSelection();
   setQuery({ ...q, window: { start: addDays(q.window.start, shift), end: addDays(q.window.end, shift) } }, true);
   set({ pendingSlip: true, leftTab: 'diff' });
+}
+
+/**
+ * Launch-slip example: rank `first` (e.g. March), save its #1 as scenario A, then rank `second` (June) and let the
+ * pendingSlip effect in App save it as B. The user ends on the Results tab with the June answer.
+ */
+let slipRun = 0;
+export async function runExampleSlip(first: Query, second: Query) {
+  const run = ++slipRun;
+  set({ scenA: null, scenB: null, pendingSlip: false });
+  setQuery(first, false);
+  freshAnswer();
+  await runRank();
+  const id = get().selected;
+  if (run !== slipRun || !id || !get().results?.results.length) return;
+  const vis = await waitForVis(id, rankSeq);
+  if (run !== slipRun || !vis || get().selected !== id || !saveScenario('A')) return;
+  setQuery(second, false); // before pendingSlip: the App effect must not save March's data as B
+  set({ pendingSlip: true, leftTab: 'results', phoneTab: 'results' });
+  freshAnswer();
+  await runRank();
 }
 
 export function applyNasaScreening() {

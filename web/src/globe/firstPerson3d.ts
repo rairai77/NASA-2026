@@ -181,7 +181,7 @@ function orientEarth(s: State) {
 /** Request a redraw of the 2D skyline overlay (it is painted on every scene.postRender, see paintSkyline). */
 function drawSkyline(s: State) { s.viewer.scene.requestRender(); }
 
-const SKY_LABEL_FONT = '600 12px "Inter Variable", ui-sans-serif, system-ui, sans-serif';
+const SKY_LABEL_FONT = '600 10.5px "Inter Variable", ui-sans-serif, system-ui, sans-serif';
 /** Stroke the computed skyline (and its label) on the 2D overlay canvas, projected through the current camera. */
 function paintSkyline(s: State) {
   const cv = s.overlay, scene = s.viewer.scene, cam = s.viewer.camera, base = scene.canvas;
@@ -213,20 +213,21 @@ function paintSkyline(s: State) {
   g.strokeStyle = SKYLINE_COLOR; g.globalAlpha = 0.9; g.lineWidth = 2; g.lineJoin = 'round'; g.lineCap = 'round';
   g.beginPath();
   let pen = false;
+  let lblX = NaN, lblY = NaN; // first skyline point at the left edge of the view (label anchor)
   for (let i = 0; i <= n; i++) {
     if (!project((i % n) * 360 / n, h[i % n])) { pen = false; continue; }
+    if (Number.isNaN(lblX) && px >= 6 && px < W && py > 0 && py < H) { lblX = px; lblY = py; }
     if (pen) g.lineTo(px, py); else { g.moveTo(px, py); pen = true; }
   }
   g.stroke();
-  // label just above the skyline in the direction the visitor first looks
-  const laz = s.siteLabelAz;
-  if (project(laz, h[Math.round(wrap360(laz) / 360 * n) % n] + 1.2)) {
+  // label at the left edge of the view, just above the skyline there (clear of the Sun and Earth)
+  if (!Number.isNaN(lblX)) {
     g.font = SKY_LABEL_FONT; g.textBaseline = 'middle'; g.textAlign = 'left';
-    const text = 'computed skyline (LOLA)', tw = g.measureText(text).width, bw = tw + 14, bh = 22;
-    const bx = px - bw / 2, by = py - bh;
+    const text = 'computed skyline (LOLA)', tw = g.measureText(text).width, bw = tw + 10, bh = 16;
+    const bx = Math.max(4, lblX - 2), by = Math.max(2, lblY - bh - 5);
     g.globalAlpha = 1; g.fillStyle = 'rgba(10,13,19,0.8)';
-    g.beginPath(); g.roundRect(bx, by, bw, bh, 4); g.fill();
-    g.fillStyle = SKYLINE_COLOR; g.fillText(text, bx + 7, by + bh / 2 + 0.5);
+    g.beginPath(); g.roundRect(bx, by, bw, bh, 3); g.fill();
+    g.fillStyle = SKYLINE_COLOR; g.fillText(text, bx + 5, by + bh / 2 + 0.5);
   }
   g.globalAlpha = 1;
 }

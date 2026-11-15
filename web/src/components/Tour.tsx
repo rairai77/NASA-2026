@@ -5,7 +5,8 @@ import { flyTo, resultId, select, setCursor, useStore, windowOf } from '../store
 import { Button, IconButton } from './ui.tsx';
 
 /** What each tour step points at: a stable data-tour attribute first, then the legacy container as a fallback. */
-const TARGETS: Record<string, { sel: string[]; phone?: 'results' | 'site' | 'timeline' }> = {
+const TARGETS: Record<string, { sel: string[]; phone?: 'results' | 'site' | 'timeline'; union?: boolean }> = {
+  ask: { sel: ['[data-tour="ask"]', '[data-tour="chips"]'], union: true },
   answer: { sel: ['.pn-list .pn-card', '.pn-list > li'], phone: 'results' },
   why: { sel: ['[data-tour="sky"]', '[data-tour="inspector"]', '.drawer'], phone: 'site' },
   scrub: { sel: ['[data-tour="timeline"]', '.timeline'], phone: 'timeline' },
@@ -13,6 +14,31 @@ const TARGETS: Record<string, { sel: string[]; phone?: 'results' | 'site' | 'tim
   how: { sel: ['[data-tour="how"]'] },
 };
 const isPhone = () => window.matchMedia('(max-width: 899px)').matches;
+
+/** every visible target of a step (the Ask box and the chips ring together) */
+function findTargets(act: string): HTMLElement[] {
+  const t = TARGETS[act];
+  if (!t?.union) { const el = findTarget(act); return el ? [el] : []; }
+  return t.sel.map((s) => document.querySelector(s) as HTMLElement | null).filter((el): el is HTMLElement => !!el && el.getBoundingClientRect().width > 0);
+}
+
+/** clip a rect to the viewport and to every scrolling ancestor of the element (so the ring never spills over the timeline) */
+function clippedRect(els: HTMLElement[]): DOMRect | null {
+  if (!els.length) return null;
+  let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+  for (const el of els) {
+    const q = el.getBoundingClientRect();
+    l = Math.min(l, q.left); t = Math.min(t, q.top); r = Math.max(r, q.right); b = Math.max(b, q.bottom);
+  }
+  let cl = Math.max(0, l), ct = Math.max(0, t), cr = Math.min(window.innerWidth, r), cb = Math.min(window.innerHeight, b);
+  for (let p = els[0].parentElement; p && p !== document.body; p = p.parentElement) {
+    const o = getComputedStyle(p);
+    if (!/(auto|scroll|hidden|clip)/.test(o.overflow + o.overflowX + o.overflowY)) continue;
+    const q = p.getBoundingClientRect();
+    cl = Math.max(cl, q.left); ct = Math.max(ct, q.top); cr = Math.min(cr, q.right); cb = Math.min(cb, q.bottom);
+  }
+  return new DOMRect(cl, ct, Math.max(0, cr - cl), Math.max(0, cb - ct));
+}
 
 function findTarget(act: string): HTMLElement | null {
   for (const s of TARGETS[act]?.sel ?? []) {
@@ -49,13 +75,14 @@ export function Tour() {
     const act = TOUR[step].action;
     let scrolled = false;
     const measure = () => {
-      const el = findTarget(act);
+      const els = findTargets(act);
+      const el = els[0] ?? null;
       if (el && !scrolled && act !== 'scrub') {
         scrolled = true;
         const h = el.getBoundingClientRect().height;
         el.scrollIntoView({ block: h > window.innerHeight * 0.5 ? 'start' : 'center', inline: 'nearest' });
       }
-      const r = el?.getBoundingClientRect() ?? null;
+      const r = clippedRect(els);
       setRect((p) => (p && r && Math.abs(p.x - r.x) < 1 && Math.abs(p.y - r.y) < 1 && Math.abs(p.width - r.width) < 1 && Math.abs(p.height - r.height) < 1 ? p : r));
     };
     measure();
@@ -92,7 +119,7 @@ export function Tour() {
   if (step === null) return null;
   const t = TOUR[step];
   const set = (n: number | null) => useStore.setState({ tourStep: n, playing: n === null ? false : useStore.getState().playing });
-  const ring = rect;
+  const ring = rect && rect.width > 0 && rect.height > 0 ? rect : null;
   const text = isPhone() && t.phoneText ? t.phoneText : t.text;
   return (
     <>

@@ -5,7 +5,7 @@ import { DAY, HOUR, clamp, fmtUTC } from '../lib/time.ts';
 import { select, setCursor, toggleCompare, useActiveIds, useStore, windowOf } from '../store.ts';
 import { ChevronDown, ChevronUp, HelpCircle, Info, Pause, Play, StepBack, StepForward, X } from 'lucide-react';
 import { sampleAt } from '../lib/countdown.ts';
-import { placeFor, shortName } from '../lib/places.ts';
+import { horizonAtAz, placeFor, shortName } from '../lib/places.ts';
 import { cssVar, palette, useTheme } from '../lib/theme.ts';
 import { Button, Dot, IconButton, Kbd, Popover, Segmented, Tooltip, Why } from './ui.tsx';
 
@@ -39,7 +39,7 @@ export function fmtClock(t: number): string {
   return `${DOW[d.getUTCDay()]} ${d.getUTCDate()} ${MON[d.getUTCMonth()]} ${d.getUTCFullYear()} \u00b7 ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())} UTC`;
 }
 
-/** Comms lane under a row: clear / marginal (Earth skims the skyline) / DSN gap (Earth up but no DSN dish sees the Moon).
+/** Comms lane under a row: clear / weak link (Earth skims the skyline) / no ground station (Earth up but no DSN dish sees the Moon).
  *  With a relay orbiter assumed the whole lane is clear. Needs linkMargin (and dsnUp) from the engine. */
 export function drawCommsRow(g: CanvasRenderingContext2D, v: VisResult | undefined, x: (t: number) => number, v0: number, v1: number, W: number, y: number, relay = false) {
   const [co, ch] = LANES[3];
@@ -106,6 +106,12 @@ export function drawRow(g: CanvasRenderingContext2D, v: VisResult | undefined, x
   g.restore();
 }
 
+/** Hover readout for Earth: above the local skyline when the skyline is known (same as the inspector), else plain elevation. */
+function earthHover(el: number, az: number, horizon: ArrayLike<number> | undefined): string {
+  if (horizon && horizon.length) return `Earth +${Math.max(0, el - horizonAtAz(horizon, az)).toFixed(1)}\u00b0 above skyline`;
+  return `Earth ${el.toFixed(1)}\u00b0 high (elevation)`;
+}
+
 const SPEED_KEYS = SPEEDS.map(([l]) => l);
 
 function Help({ relay }: { relay: boolean }) {
@@ -127,6 +133,10 @@ function Help({ relay }: { relay: boolean }) {
         <div className="ui-section-title">Legend</div>
         <Legend relay={relay} />
       </div>
+      <div className="ui-section-title">Comms lane</div>
+      <div className="tl-help-note"><b>Comms clear</b>: Earth is clearly above the skyline.</div>
+      <div className="tl-help-note"><b>Weak link</b>: Earth is only just above the skyline (under 1.5{'\u00b0'}), so the link is marginal.</div>
+      <div className="tl-help-note"><b>No ground station</b>: Earth is up, but no Deep Space Network dish can see the Moon.</div>
     </div>
   );
   return (
@@ -149,7 +159,7 @@ function Legend({ relay }: { relay: boolean }) {
     <span className="tl-legend">
       <span><Dot tone="sun" />Sun</span><span><Dot tone="earth" />Earth</span><span><Dot tone="both" />Both</span><span><Dot tone="ecl" />Eclipse</span>
       <span className="sep" />
-      <span><Dot tone="comms" />Comms clear</span><span><Dot tone="marginal" />Marginal</span><span><Dot tone="gap" />DSN gap</span>
+      <span><Dot tone="comms" />Comms clear</span><span><Dot tone="marginal" />Weak link</span><span><Dot tone="gap" />No ground station</span>
       {relay && <span className="note">(Relay assumed)</span>}
     </span>
   );
@@ -346,7 +356,7 @@ export function Timeline({ allowCollapse = true }: { allowCollapse?: boolean }) 
           {sm && hid && (
             <span className="tl-hover-st">
               <span><Dot tone="sun" />{sm.sunUp ? `Sun up ${sm.sunEl.toFixed(1)}\u00b0` : 'Sun down'}</span>
-              <span><Dot tone="earth" />{sm.earthUp ? `Earth up ${sm.earthEl.toFixed(1)}\u00b0` : 'Earth down'}</span>
+              <span><Dot tone="earth" />{sm.earthUp ? earthHover(sm.earthEl, sm.earthAz, data[hid]?.horizon?.elevDeg) : 'Earth down'}</span>
               {sm.eclipseFrac > 0 && <span><Dot tone="ecl" />eclipse {Math.round(sm.eclipseFrac * 100)}%</span>}
             </span>
           )}
@@ -367,7 +377,7 @@ export function Timeline({ allowCollapse = true }: { allowCollapse?: boolean }) 
             const lbl = nm.sub ? `${nm.name} (${nm.sub})` : nm.name;
             return (
               <div key={id} className={`tl-label ${selected === id ? 'sel' : ''}`} style={{ height: ROW_H }} onClick={() => select(id)} title={t && t.kind === 'site' ? t.name : lbl}>
-                <span className="nm">{t?.rank ? <span className={`tl-rank ${t.rank === 1 ? 'gold' : ''}`}>{t.rank}</span> : null}<span className="tn"><span className="t">{nm.name}</span>{nm.sub && <span className="tsub">{nm.sub}</span>}</span></span>
+                <span className="nm"><span className="tn"><span className="t">{t?.rank ? <b className={`tl-rk ${t.rank === 1 ? 'gold' : ''}`}>#{t.rank} </b> : null}{nm.name}</span>{nm.sub && <span className="tsub">{nm.sub}</span>}</span></span>
                 {data[id]?.loading && <span className="ui-spinner" aria-label="loading" />}
                 {id !== selected && <button className="tl-x" aria-label={`Remove ${nm.name} from timeline`} onClick={(e) => { e.stopPropagation(); toggleCompare(id); }}><X aria-hidden /></button>}
                 <span className="tl-lanes" aria-hidden>
@@ -390,7 +400,7 @@ export function Timeline({ allowCollapse = true }: { allowCollapse?: boolean }) 
           )}
         </div>
       </div>
-      {!collapsed && ids.length === 1 && <p className="tl-hint"><Info aria-hidden />Use Add to timeline on other sites to compare them here.</p>}
+      {!collapsed && ids.length === 1 && <p className="tl-hint"><Info aria-hidden />Pin other sites to the timeline to compare them here.</p>}
     </section>
   );
 }

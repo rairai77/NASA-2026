@@ -4,13 +4,14 @@ import { countdowns, sampleAt } from '../lib/countdown.ts';
 import { buildCsv, download, type CsvRow } from '../lib/csv.ts';
 import { earthPhrase, horizonAtAz, placeFor, sunPhrase } from '../lib/places.ts';
 import { METRIC_BY_NAME, METRICS, STATIC_METRICS, metricLabel, fmtMetric } from '../query/metrics.ts';
+import { fmtWindowIncl } from '../query/query.ts';
 import { MAX_COMPARE, flyTo, select, seriesStep, toast, useStore, windowOf, type InspectorTab } from '../store.ts';
 import { EllipsePanel } from './EllipsePanel.tsx';
 import { HorizonPlot, needsFullScale } from './HorizonPlot.tsx';
 import { PowerPanel } from './PowerPanel.tsx';
 import { TraversePanel } from './TraversePanel.tsx';
 import { Button, Dot, IconButton, Popover, Segmented, Tabs, Tag, Tooltip, Why } from './ui.tsx';
-import { COMPARE_TIP, toggleTimeline, useCurrentRanks } from './LeftPanel.tsx';
+import { toggleTimeline, useCurrentRanks } from './LeftPanel.tsx';
 
 /** Same export as the top bar: timeline + metrics of the inspected site (and the compare list) as CSV. */
 function exportCsv() {
@@ -55,7 +56,7 @@ function DataTab({ m, edu }: { m: Record<string, number | undefined>; edu: boole
   const groups = extra.length ? [...GROUPS.slice(0, 3), { title: 'Other', keys: extra }, GROUPS[3]] : GROUPS;
   return (
     <div className="pn-pane">
-      <p className="pn-sub">Window {query.window.start.slice(0, 10)} {'→'} {query.window.end.slice(0, 10)}</p>
+      <p className="pn-sub">Window {fmtWindowIncl(query.window.start, query.window.end)}</p>
       <table className="pn-table pn-data">
         <tbody>
           {groups.map((g) => (
@@ -74,6 +75,9 @@ const GroupRows = ({ title, children }: { title: string; children: ReactNode }) 
   </>
 );
 
+/** Horizon view choice, kept for the session once the user switches. */
+let plotPref: 'polar' | 'panorama' = 'panorama';
+
 export function Drawer({ allowCollapse = true }: { allowCollapse?: boolean }) {
   const id = useStore((s) => s.selected);
   const t = useStore((s) => (s.selected ? s.targets[s.selected] : undefined));
@@ -89,7 +93,7 @@ export function Drawer({ allowCollapse = true }: { allowCollapse?: boolean }) {
   const full = useStore((s) => s.compare.length >= MAX_COMPARE);
   const tab = useStore((s) => s.inspectorTab);
   const collapsed = useStore((s) => s.rightCollapsed) && allowCollapse;
-  const [pmode, setPmode] = useState<'polar' | 'panorama'>('polar');
+  const [pmode, setPmode] = useState<'polar' | 'panorama'>(plotPref);
   const [zoomPref, setZoom] = useState(true);
   const [ellOpen, setEllOpen] = useState(false);
   const win = useMemo(() => windowOf(query), [query]);
@@ -107,8 +111,7 @@ export function Drawer({ allowCollapse = true }: { allowCollapse?: boolean }) {
   const name = place?.title ?? t.name;
   const curRank = ranks.get(id);
   const stale = t.kind === 'result' && curRank === undefined;
-  // the selected site is always shown as a timeline row; the button pins it so it stays when another site is selected
-  const selOnTimeline = true;
+  // the selected site is always shown as a timeline row; "Pin" adds it to the compare list so it stays when another site is selected
   const winH = (win[1] - win[0]) / 3600;
   const step = seriesStep(query);
   const refined = !!t.coarse && !!d?.vis;
@@ -128,27 +131,26 @@ export function Drawer({ allowCollapse = true }: { allowCollapse?: boolean }) {
         <header className="pn-dh">
           <div className="pn-dh-main">
             <h2>{curRank ? <span className={`pn-rank ${curRank === 1 ? 'is-gold' : ''}`}>{curRank}</span> : null}<span>{name}</span></h2>
-            <p className="mono">{t.lat.toFixed(4)}{'°'}, {t.lon.toFixed(4)}{'°'}</p>
-            {(place?.fromLabel || t.group) && <p className="pn-dh-sub">{place?.fromLabel || t.group}</p>}
+            <p className="pn-dh-meta">
+              <span className="mono">{t.lat.toFixed(4)}{'°'}, {t.lon.toFixed(4)}{'°'}</span>
+              {(place?.fromLabel || t.group) && <span className="pn-dh-sub">{place?.fromLabel || t.group}</span>}
+              {stale && <Tag tone="info" title="This point came from an earlier ranking; it is not in the current results, so it has no rank">From previous search</Tag>}
+              {t.representative && <Tag tone="warn" title="One point stands in for a whole candidate region">Representative point</Tag>}
+              {t.coarse && <Tag tone="warn" title="This cell was found on the global 10 km screening grid (coarse terrain, 6-hour steps). The timeline and metrics below are recomputed at 15 minutes with the local horizon, but treat the site as a lead, not a landing-site answer.">Coarse 10 km screening</Tag>}
+              <Tag tone={demo ? 'info' : undefined} title={demo ? 'Synthetic demo terrain, not LOLA' : `LOLA terrain model, horizon sampled every ${d?.horizon?.resolutionM ?? 20} m`}>{demo ? 'Demo terrain' : 'LOLA terrain'} {'·'} {d?.horizon?.resolutionM ?? 20} m</Tag>
+              {d?.horizon && d.horizon.missingSamples > 0 && <Tag tone="warn">Gaps in terrain</Tag>}
+            </p>
           </div>
           <span className="pn-dh-btns">
             {allowCollapse && <IconButton className="pn-collapse" icon={ChevronRight} label="Collapse the inspector ( ] )" tip="bottom" onClick={() => useStore.setState({ rightCollapsed: true })} />}
             <IconButton icon={X} label="Close inspector" tip="left" onClick={() => select(null)} />
           </span>
         </header>
-        <div className="pn-tags">
-          {stale && <Tag tone="info" title="This point came from an earlier ranking; it is not in the current results, so it has no rank">From previous search</Tag>}
-          {t.representative && <Tag tone="warn" title="One point stands in for a whole candidate region">Representative point</Tag>}
-          {t.coarse && <Tag tone="warn" title="This cell was found on the global 10 km screening grid (coarse terrain, 6-hour steps). The timeline and metrics below are recomputed at 15 minutes with the local horizon, but treat the site as a lead, not a landing-site answer.">Coarse 10 km screening</Tag>}
-          <Tag title="Horizon sampling resolution">{d?.horizon?.resolutionM ?? 20} m horizon</Tag>
-          <Tag tone={demo ? 'info' : undefined} title={demo ? 'Synthetic demo terrain, not LOLA' : 'LOLA terrain model'}>{demo ? 'Demo terrain' : 'LOLA terrain'}</Tag>
-          {d?.horizon && d.horizon.missingSamples > 0 && <Tag tone="warn">Gaps in terrain</Tag>}
-        </div>
 
         {d?.vis && (['sun_hours', 'earth_hours', 'both_hours'] as const).some((k) => m[k] !== undefined) && (
           <section aria-label="Totals over the query window">
             <div className="pn-stats pn-stats--hero">
-              {([['sun_hours', 'Sun', 'sun'], ['earth_hours', 'Earth', 'earth'], ['both_hours', 'Sun + Earth', 'ok']] as const).map(([k, label, tone]) => {
+              {([['sun_hours', 'Sun', 'sun'], ['earth_hours', 'Earth', 'earth'], ['both_hours', 'Sun + Earth', 'both']] as const).map(([k, label, tone]) => {
                 const v = m[k];
                 if (v === undefined) return <div key={k} className={`ui-stat ui-stat--${tone}`}><span className="ui-stat-label">{label}</span><span className="ui-stat-value">{'—'}</span></div>;
                 const big = v >= 48;
@@ -165,8 +167,7 @@ export function Drawer({ allowCollapse = true }: { allowCollapse?: boolean }) {
           </section>
         )}
 
-        <section className="pn-now" aria-live="polite" aria-label="Now">
-          <h3 className="ui-section-title">Now at the timeline cursor</h3>
+        <section className="pn-now" aria-live="polite" aria-label="Now at the timeline cursor">
           {cd ? (
             <>
               <div className={`pn-cd pn-cd--sun ${cd.sunSoon ? 'is-soon' : ''}`}><span className="pn-cd-ic"><Dot tone="sun" /></span><span>{cd.sun}</span></div>
@@ -174,9 +175,9 @@ export function Drawer({ allowCollapse = true }: { allowCollapse?: boolean }) {
             </>
           ) : <p className="pn-muted">{d?.error ? 'No terrain data at this location yet' : d?.loading ? 'Computing…' : 'No data'}</p>}
           {now && (
-            <div className="pn-elaz mono">
-              <span><i className="ui-dot ui-dot--sun" />{sunPhrase(now.sunEl, now.sunUp)}{now.sunUp ? ` el · ${now.sunAz.toFixed(0)}° az` : ''}</span>
-              <span><i className="ui-dot ui-dot--earth" />{earthPhrase(now.earthEl, hasRel ? earthRel : now.earthEl, now.earthUp)}</span>
+            <div className="pn-elaz">
+              <span>{sunPhrase(now.sunEl, now.sunUp, now.sunAz)}</span>
+              <span>{earthPhrase(now.earthEl, hasRel ? earthRel : now.earthEl, now.earthUp, now.earthAz)}</span>
               <Why id="libration" />
             </div>
           )}
@@ -184,10 +185,10 @@ export function Drawer({ allowCollapse = true }: { allowCollapse?: boolean }) {
         </section>
 
         <div className="pn-actions">
-          <Button variant="primary" icon={Eye} data-tour="stand" onClick={() => useStore.setState({ fpOpen: true })} disabled={!d?.horizon} title="First-person view from 2 m above the ground">Stand here</Button>
-          <Button icon={Crosshair} onClick={() => flyTo(id)}>Fly to</Button>
-          <Tooltip side="bottom" wrap content={inCompare ? 'On timeline. Click to remove this site from the timeline comparison' : selOnTimeline && !full ? 'Already shown on the timeline while selected. Click to keep it there when you select another site.' : full ? `Timeline is full (${MAX_COMPARE} sites). Remove one first.` : COMPARE_TIP}>
-            <Button icon={selOnTimeline ? Check : Plus} active={selOnTimeline} disabled={!inCompare && full} onClick={() => toggleTimeline(id)}>{selOnTimeline ? 'On timeline' : 'Add to timeline'}</Button>
+          <Button variant="primary" size="sm" icon={Eye} data-tour="stand" onClick={() => useStore.setState({ fpOpen: true })} disabled={!d?.horizon} title={d?.horizon ? 'First-person view from 2 m above the ground' : 'Loading the skyline…'}>Stand here</Button>
+          <Button size="sm" icon={Crosshair} onClick={() => flyTo(id)}>Fly to</Button>
+          <Tooltip side="bottom" wrap content={full && !inCompare ? `Timeline is full (${MAX_COMPARE} sites). Remove one first.` : 'The selected site is always on the timeline. Pin it to keep it there when you select another.'}>
+            <Button size="sm" icon={inCompare ? Check : Plus} active={inCompare} disabled={!inCompare && full} onClick={() => toggleTimeline(id)}>{inCompare ? 'Pinned' : 'Pin to timeline'}</Button>
           </Tooltip>
           <Popover className="pn-more" trigger={(open, toggle) => <IconButton icon={Ellipsis} label="More actions" tip="bottom" active={open} onClick={toggle} />}>
             <button className="pn-menu-i" data-close-popover onClick={() => { setEllOpen(!ellOpen); }}><CircleDashed aria-hidden />{ellOpen ? 'Hide landing ellipse' : 'Landing ellipse'}</button>
@@ -206,7 +207,7 @@ export function Drawer({ allowCollapse = true }: { allowCollapse?: boolean }) {
           <div className="pn-pane" data-tour="sky">
             <div className="pn-pane-h">
               <h3 className="ui-section-title">{edu ? 'Skyline' : 'Horizon'}<Why id={['horizon-plot', 'why-pole-hard', 'sun-skims-horizon']} /></h3>
-              <Segmented label="Plot type" value={pmode} onChange={setPmode} options={[{ value: 'polar', label: 'Polar' }, { value: 'panorama', label: 'Panorama' }]} />
+              <Segmented label="Plot type" value={pmode} onChange={(v) => { plotPref = v; setPmode(v); }} options={[{ value: 'polar', label: 'Polar' }, { value: 'panorama', label: 'Panorama' }]} />
             </div>
             {d?.horizon ? <HorizonPlot horizon={d.horizon.elevDeg} vis={d.vis} now={now} mode={pmode} zoom={zoom} /> : <div className="pn-plot-skel ui-skel">Loading horizon{'…'}</div>}
             <div className="pn-plot-foot">

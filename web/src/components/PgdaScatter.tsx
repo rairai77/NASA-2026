@@ -29,7 +29,7 @@ export function PgdaScatter() {
         <text x={X(0.04)} y={Y(0.93)} fontSize={12} fontWeight={600} fill="var(--text)">r = 0.976</text>
         <text x={X(0.04)} y={Y(0.85)} fontSize={9} fill="var(--text-3)">dashed: 1:1</text>
       </svg>
-      <figcaption className="hint">Each square counts 1 km cells ({PGDA_N.toLocaleString('en-US')} in total, 85{'–'}90{'°'}S); darker means more cells.</figcaption>
+      <figcaption className="hint">Each square counts 1 km cells ({PGDA_N.toLocaleString('en-US')} in total, 85{'–'}90{'°'}S); stronger colour means more cells.</figcaption>
     </figure>
   );
 }

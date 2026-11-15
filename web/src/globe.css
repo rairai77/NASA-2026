@@ -61,7 +61,11 @@
 .tl-label.sel { color: var(--primary-text); font-weight: 600; }
 .tl-label .nm { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
 .tl-label .tn { min-width: 0; display: grid; gap: 1px; }
-.tl-label .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-label .t { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.25; overflow-wrap: anywhere; }
+.tl-rk { font-weight: 700; color: var(--text-2); }
+.tl-rk.gold { color: var(--primary-text); }
+.tl-help-note { font-size: var(--fs-xs); color: var(--text-2); line-height: 1.4; max-width: 300px; }
+.tl-help-note b { color: var(--text); font-weight: 600; }
 .tl-label .tsub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 var(--fs-xs) var(--mono); color: var(--text-3); }
 .tl-rank { flex: none; display: inline-grid; place-items: center; min-width: 17px; height: 17px; border-radius: 50%; background: var(--chip-bg); color: var(--chip-ink); font: 700 10.5px var(--font); }
 .tl-rank.gold { background: var(--primary); }
@@ -112,6 +116,7 @@
   .tl-label .nm { align-items: flex-start; }
   .tl-label .t { white-space: normal; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; line-height: 1.25; }
   .tl-rank { display: none; }
+  .tl-rk { display: inline; }
   .tl-x, .tl-label .tsub { display: none; }
   .tl-lanes { width: 34px; right: 2px; }
   .tl-lanes i { font-size: 10px; letter-spacing: 0; }
@@ -131,6 +136,7 @@
 .fp .fp-close { right: 14px; }
 .fp-back { background: color-mix(in srgb, var(--surface-0) 82%, transparent); backdrop-filter: blur(10px); border-color: var(--border-strong); }
 .fp-time { display: none; }
+.fp-jump { pointer-events: auto; background: color-mix(in srgb, var(--surface-0) 74%, transparent); backdrop-filter: blur(10px); }
 .fp-bottom { position: absolute; left: 14px; right: 14px; bottom: 50px; display: grid; gap: 8px; justify-items: start; pointer-events: none; }
 .fp-row { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 8px; width: 100%; }
 .fp-bottom .fp-note { display: grid; gap: 2px; font-size: 11px; max-width: min(360px, 100%); }
@@ -172,6 +178,12 @@
   .fp-hdg { bottom: calc(41px + env(safe-area-inset-bottom)); }
   .fp-ctl { top: auto; bottom: 84px; left: 8px; right: 8px; max-width: none; justify-content: flex-start; }
   .fp-hint { display: none; }
+  .fp-note-long { display: none; }
+  .fp-ctl--icons { gap: 10px; align-items: center; }
+  .fp-ctl--icons .ui-icon-btn { width: 44px; height: 44px; border-radius: 50%; background: rgba(10,13,19,.74); backdrop-filter: blur(10px); border: 1px solid var(--border-strong); color: var(--text); }
+  .fp-ctl--icons .ui-icon-btn.is-active { background: var(--primary); color: var(--primary-ink); border-color: transparent; }
+  .fp-time-lbl { flex: none; margin-right: 10px; font: 600 var(--fs-xs) var(--mono); color: var(--text-2); }
+  .fp-time input { flex: 1; min-width: 0; }
   .fp .fp-flag { bottom: calc(166px + env(safe-area-inset-bottom)); max-width: calc(100% - 16px); }
 }
 
@@ -200,3 +212,17 @@
 }
 .gl-tb-extra { display: contents; }
 .gl-more-pop .ui-icon-btn { width: 34px; height: 34px; }
+
+/* ---- globe legend chip (dismissible) and night status ---- */
+.gl-legend { position: absolute; left: 12px; top: 12px; z-index: 5; display: inline-flex; align-items: center; gap: 6px; max-width: calc(100% - 70px); padding: 4px 4px 4px 10px; border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--surface-1) 84%, transparent); border: 1px solid var(--border-strong); backdrop-filter: blur(8px); color: var(--text-2); font-size: var(--fs-xs); line-height: 1.3; }
+.gl-lg-disc { display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: #f5c542; color: #10141c; font: 700 10px/1 var(--font); flex: none; }
+.gl-lg-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #56B4E9; border: 1px solid rgba(10,13,19,.8); flex: none; }
+.gl-lg-x { display: grid; place-items: center; width: 22px; height: 22px; flex: none; border: 0; border-radius: 50%; background: transparent; color: var(--text-3); cursor: pointer; }
+.gl-lg-x:hover { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
+.gl-lg-x svg { width: 13px; height: 13px; }
+.gl-night { color: var(--text); font-weight: 600; }
+@media (max-width: 899px) {
+  .gl-legend { left: 8px; top: 8px; max-width: calc(100% - 58px); font-size: 10.5px; padding-left: 8px; }
+  .gl-lg-x { width: 28px; height: 28px; }
+}

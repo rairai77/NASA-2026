@@ -7,6 +7,7 @@ import { DEFAULT_LIMITS, clearTraverse, runTraverse, setTraverse, useStore, type
 import { Button, IconButton, NumInput, Stat } from './ui.tsx';
 import { useCurrentRanks } from './LeftPanel.tsx';
 
+const PLANNER_KM = 15;
 const fmtDist = (m: number) => (m >= 1000 ? { v: (m / 1000).toFixed(2), u: 'km' } : { v: String(Math.round(m)), u: 'm' });
 
 export function TraversePanel({ target }: { target: Target }) {
@@ -16,15 +17,22 @@ export function TraversePanel({ target }: { target: Target }) {
   const cursor = useStore((s) => s.cursor);
   const { goal, limits, busy, result, error, picking } = tr;
   const ranks = useCurrentRanks();
-  // goals: only sites in the current ranking (older searches are dropped), plus the catalog, always by name
+  // goals: only places the planner can reach (within ~15 km of the start), nearest first; ranked results show their rank
   const options = useMemo(() => {
     const nameOf = (t: Target) => (t.kind === 'result' ? placeFor(t.lat, t.lon, sites).title : t.name);
-    const ranked = [...ranks.entries()]
-      .filter(([id]) => id !== target.id && targets[id] && !sites.some((s) => s.id === id))
-      .sort((a, b) => a[1] - b[1])
-      .map(([id, rank]) => ({ id, rank, name: nameOf(targets[id]) }));
-    return { ranked, sites: sites.filter((s) => s.id !== target.id), nameOf };
-  }, [targets, sites, target.id, ranks]);
+    const list: { id: string; label: string; km: number }[] = [];
+    for (const s of sites) {
+      if (s.id === target.id) continue;
+      const km = greatCircleKm(target, s);
+      if (km <= PLANNER_KM) list.push({ id: s.id, label: s.name, km });
+    }
+    for (const [id, rank] of ranks) {
+      if (id === target.id || !targets[id] || sites.some((s) => s.id === id)) continue;
+      const km = greatCircleKm(target, targets[id]);
+      if (km <= PLANNER_KM) list.push({ id, label: `#${rank} ${nameOf(targets[id])}`, km });
+    }
+    return { goals: list.sort((a, b) => a.km - b.km), nameOf };
+  }, [targets, sites, target, ranks]);
   const startName = target.kind === 'result' ? placeFor(target.lat, target.lon, sites).title : target.name;
   const setLim = (p: Partial<typeof limits>) => setTraverse({ limits: { ...limits, ...p } });
   const dist = goal ? greatCircleKm(target, goal) : 0;
@@ -72,15 +80,16 @@ export function TraversePanel({ target }: { target: Target }) {
         </div>
       ) : (
         <div className="pn-goal-row">
-          <Button size="sm" icon={MousePointerClick} active={picking} onClick={() => setTraverse({ picking: !picking })}>{picking ? 'Click the globe…' : 'Pick on globe'}</Button>
-          <select aria-label="Goal site" value="" onChange={(e) => {
+          <Button size="sm" variant={options.goals.length ? undefined : 'primary'} icon={MousePointerClick} active={picking} onClick={() => setTraverse({ picking: !picking })}>{picking ? 'Click the globe…' : 'Pick on globe'}</Button>
+          {options.goals.length > 0
+            ? <select aria-label="Goal site" value="" onChange={(e) => {
             const id = e.target.value; if (!id) return;
             const t = targets[id]; if (t) setTraverse({ goal: { lat: t.lat, lon: t.lon, name: options.nameOf(t) }, picking: false, result: null, error: null });
           }}>
-            <option value="">Goal: another site…</option>
-            {options.ranked.length > 0 && <optgroup label="Ranked results">{options.ranked.map((t) => <option key={t.id} value={t.id}>#{t.rank} {t.name}</option>)}</optgroup>}
-            <optgroup label="Curated sites">{options.sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</optgroup>
+            <option value="">Goal within 15 km…</option>
+            {options.goals.map((g) => <option key={g.id} value={g.id}>{g.label} {'·'} {g.km.toFixed(1)} km</option>)}
           </select>
+            : <p className="pn-hint">No known sites within 15 km of here. Click the globe to choose a goal point.</p>}
         </div>
       )}
       {goal && dist > 15 && <p className="pn-note warn">The planner grid is limited to about 15 km; a goal this far may fail.</p>}

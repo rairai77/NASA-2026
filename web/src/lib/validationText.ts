@@ -1,10 +1,10 @@
 // Numbers copied from docs/VALIDATION.md (run scripts named there). Keep in sync by hand; never show a placeholder as a result.
-export const HEADLINE = 'Our Sun and Earth visibility agrees with NASA’s independent polar illumination maps, a replay of three real landers, and the published permanent-shadow mask; limits are stated below.';
+export const HEADLINE = 'Our Sun and Earth visibility agrees with NASA’s independent polar illumination maps, a consistency check against real landers, and the published permanent-shadow mask; limits are stated below.';
 
 export const HEADLINE_CARDS: { k: string; n: string; m: string; c: string }[] = [
   { k: 'NASA PGDA illumination', n: 'r = 0.976', m: 'Where we say the Sun shines, NASA’s independent polar maps agree, cell by cell.', c: '72,324 one-km cells, 85–90°S. Ours is 2026–2030, PGDA is an 18.6-year mean, so we run 0.023 lower on average (RMSE 0.039).' },
-  { k: 'Mission replay', n: '3.6 h', m: 'We predicted Chandrayaan-3’s sunset 3.6 h after its reported end of operations. IM-1 +42.3 h, Blue Ghost 1 −3.4 h.', c: 'Three missions only. IM-1 was a tipped lander that died before true sunset. Reported end times are uncertain by hours.' },
   { k: 'Permanent shadow overlap', n: 'IoU 0.81', m: 'Our “never lit” cells and NASA’s published shadow mask overlap on 97.7% of cells.', c: '7,174 dark in both; 1,633 dark only in ours (shorter window, half-disc rule).' },
+  { k: 'Mission replay', n: 'Within 4 h', m: 'Consistent with real landers: Chandrayaan-3 and Blue Ghost 1 shut down within 4 h of our predicted sunset (+3.6 h and −3.4 h).', c: 'A consistency check on two missions, not a sunset test: shutdown times are operator decisions or battery limits and are uncertain by hours. IM-1 tipped and ended early; SLIM, IM-2 and Hakuto-R M2 ended in landing anomalies, so those are not compared.' },
   { k: 'JPL Horizons ephemeris', n: '3e-5°', m: 'Sun and Earth directions match JPL Horizons to within 3e-5°, far inside the 0.05° target.', c: 'Mostly shows the SPICE data is read correctly. It checks geometry, not terrain.' },
 ];
 
@@ -42,8 +42,8 @@ export const RESULTS: { h: string; t: string; src: string }[] = [
 ];
 
 export const REPLAY_ROWS: [string, string, string][] = [
-  ['IM-1 (Odysseus), −80.13°', '+42.3 h', 'Lander tipped on a slope with one panel lit and was not built for night, so it died before true sunset.'],
-  ['Chandrayaan-3 (Vikram), −69.37°', '+3.6 h', 'Put to sleep as sunset approached; predicted sunset follows 3.6 h later.'],
+  ['IM-1 (Odysseus), −80.13°', 'Not comparable (+42.3 h)', 'Lander tipped on a slope with one panel lit and was not built for night, so it died before true sunset.'],
+  ['Chandrayaan-3 (Vikram), −69.37°', '+3.6 h', 'Put to sleep by operators as sunset approached; predicted sunset follows 3.6 h later.'],
   ['Blue Ghost 1, +18.56°', '−3.4 h', 'Operated about 5 h into lunar night on battery after sunset.'],
 ];
 export const REPLAY_NOTE = 'Δ = our predicted local sunset minus the reported end of operations. SLIM, IM-2 and Hakuto-R M2 ended in landing anomalies, not sunsets, so their Δ is not a prediction error. Reported end times come from press releases (see data-src/SOURCES.md) and are uncertain by hours.';
