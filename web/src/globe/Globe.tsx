@@ -18,7 +18,7 @@ import { ShadowImageryProvider } from './shadowProvider.ts';
 import { POLE_PLAN, computePlans, formatRes, needsReplan, type ShadowPlan } from './shadowPlan.ts';
 import { makeMoonCanvas } from './moonTexture.ts';
 import { addDetailImagery } from './baseImagery.ts';
-import { Crosshair, House, Layers as LayersIcon, Minus, Mountain, Plus, Rotate3d, Sun } from 'lucide-react';
+import { Crosshair, House, Layers as LayersIcon, Minus, MoreHorizontal, Mountain, Plus, Rotate3d, Sun } from 'lucide-react';
 import { IconButton, Spinner, Tag } from '../components/ui.tsx';
 import { METRIC_BY_NAME } from '../query/metrics.ts';
 import { placeFor, shortName } from '../lib/places.ts';
@@ -611,6 +611,27 @@ export default function Globe() {
     useStore.setState({ exaggeration: RELIEF_STEPS[(i + 1) % RELIEF_STEPS.length] });
   };
   const nextRelief = RELIEF_STEPS[(RELIEF_STEPS.indexOf(exaggeration) + 1) % RELIEF_STEPS.length];
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!moreOpen) return;
+    const h = (e: PointerEvent) => { if (!moreRef.current?.contains(e.target as Node)) setMoreOpen(false); };
+    document.addEventListener('pointerdown', h);
+    return () => document.removeEventListener('pointerdown', h);
+  }, [moreOpen]);
+  const extraTools = (
+    <>
+      <IconButton solid tip="left" icon={Crosshair} label="Fly to selection" disabled={!selected} onClick={() => selected && flyTo(selected)} />
+      <IconButton solid tip="left" icon={Rotate3d} label={tilted ? 'Top-down view' : 'Tilt view (oblique)'} active={tilted}
+        onClick={() => { const oc = getOrbitControls(); if (oc) oc.setTilt(oc.getTilt() > 10 ? 0 : TILT_ON_DEG); }} />
+      <IconButton solid tip="left" icon={Sun} label={layers.shadows ? 'Terrain-true shadows: on' : 'Terrain-true shadows: off'} active={layers.shadows}
+        onClick={() => useStore.setState({ layers: { ...layers, shadows: !layers.shadows } })} />
+      <span className="gl-relief">
+        <IconButton solid tip="left" icon={Mountain} label={`Relief ${exaggeration}\u00d7 (click for ${nextRelief}\u00d7)`} active={exaggeration > 1} onClick={cycleRelief} />
+        <i className="gl-badge" aria-hidden>{exaggeration}{'\u00d7'}</i>
+      </span>
+    </>
+  );
   return (
     <div className="globe">
       <div ref={hostRef} className="globe-host" />
@@ -620,22 +641,20 @@ export default function Globe() {
           <span>{keyMetric ?? `${hv.lat.toFixed(2)}\u00b0, ${hv.lon.toFixed(2)}\u00b0${hv.group ? ` \u00b7 ${hv.group}` : ''}`}</span>
         </div>
       )}
+      {!fpOpen && (
       <div className="gl-toolbar" role="toolbar" aria-label="Map controls">
         <IconButton solid tip="left" icon={Plus} label="Zoom in" onClick={() => getOrbitControls()?.zoomBy(1.7)} />
         <IconButton solid tip="left" icon={Minus} label="Zoom out" onClick={() => getOrbitControls()?.zoomBy(1 / 1.7)} />
         <IconButton solid tip="left" icon={House} label="Pole view" onClick={() => flyTo(null, true)} />
-        <IconButton solid tip="left" icon={Crosshair} label="Fly to selection" disabled={!selected} onClick={() => selected && flyTo(selected)} />
-        <IconButton solid tip="left" icon={Rotate3d} label={tilted ? 'Top-down view' : 'Tilt view (oblique)'} active={tilted}
-          onClick={() => { const oc = getOrbitControls(); if (oc) oc.setTilt(oc.getTilt() > 10 ? 0 : TILT_ON_DEG); }} />
-        <IconButton solid tip="left" icon={Sun} label={layers.shadows ? 'Terrain-true shadows: on' : 'Terrain-true shadows: off'} active={layers.shadows}
-          onClick={() => useStore.setState({ layers: { ...layers, shadows: !layers.shadows } })} />
-        <span className="gl-relief">
-          <IconButton solid tip="left" icon={Mountain} label={`Relief ${exaggeration}\u00d7 (click for ${nextRelief}\u00d7)`} active={exaggeration > 1} onClick={cycleRelief} />
-          <i className="gl-badge" aria-hidden>{exaggeration}{'\u00d7'}</i>
+        <span className="gl-tb-extra">{extraTools}</span>
+        <span className="gl-more-wrap" ref={moreRef}>
+          <IconButton solid tip="left" icon={MoreHorizontal} label="More map controls" active={moreOpen} onClick={() => setMoreOpen((o) => !o)} />
+          {moreOpen && <div className="gl-more-pop" role="group" aria-label="More map controls">{extraTools}</div>}
         </span>
         <IconButton solid tip="left" icon={LayersIcon} label="Layers" onClick={() => useStore.setState({ leftTab: 'layers' })} />
       </div>
-      {layers.shadows && (
+      )}
+      {layers.shadows && !fpOpen && (
         <div className="gl-status" role="status">
           {shadowBusy && <Spinner />}
           <span>Terrain-true shadows {'\u00b7'} {(['view', 'site'] as const).filter((k) => shadowInfo[k]).map((k) => `${k === 'site' ? '+ ' : ''}${shadowInfo[k].km} km @ ${formatRes(shadowInfo[k].m)}`).join(' ')} {'\u00b7'} LOLA</span>

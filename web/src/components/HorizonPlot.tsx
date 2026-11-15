@@ -12,6 +12,14 @@ function interp(h: Float32Array, az: number): number {
   return h[i % n] * (1 - (f - i)) + h[(i + 1) % n] * (f - i);
 }
 
+/** True when the Sun climbs well above the zoomed 0-25 deg scale (low-latitude sites): use the full 0-90 deg scale. */
+export function needsFullScale(v: VisResult | undefined): boolean {
+  if (!v) return false;
+  let mx = -90;
+  for (let i = 0; i < v.sunEl.length; i++) if (v.sunEl[i] > mx) mx = v.sunEl[i];
+  return mx > 20;
+}
+
 interface Props { horizon: Float32Array; vis?: VisResult; now: Sample | null; mode: 'polar' | 'panorama'; zoom: boolean }
 
 function trackPoints(v: VisResult | undefined, which: 'sun' | 'earth', elMin: number) {
@@ -32,7 +40,8 @@ function trackPoints(v: VisResult | undefined, which: 'sun' | 'earth', elMin: nu
 }
 
 export function HorizonPlot({ horizon, vis, now, mode, zoom }: Props) {
-  return mode === 'polar' ? <Polar horizon={horizon} vis={vis} now={now} zoom={zoom} /> : <Panorama horizon={horizon} vis={vis} now={now} />;
+  const full = useMemo(() => needsFullScale(vis), [vis]);
+  return mode === 'polar' ? <Polar horizon={horizon} vis={vis} now={now} zoom={zoom && !full} /> : <Panorama horizon={horizon} vis={vis} now={now} full={full} />;
 }
 
 function Polar({ horizon, vis, now, zoom }: { horizon: Float32Array; vis?: VisResult; now: Sample | null; zoom: boolean }) {
@@ -68,29 +77,30 @@ function Polar({ horizon, vis, now, zoom }: { horizon: Float32Array; vis?: VisRe
   );
 }
 
-function Panorama({ horizon, vis, now }: { horizon: Float32Array; vis?: VisResult; now: Sample | null }) {
+function Panorama({ horizon, vis, now, full }: { horizon: Float32Array; vis?: VisResult; now: Sample | null; full?: boolean }) {
   const W = 316, H = 170, m = { l: 28, r: 6, t: 8, b: 22 };
   const x = d3.scaleLinear().domain([0, 360]).range([m.l, W - m.r]);
-  const y = d3.scaleLinear().domain([-5, 15]).range([H - m.b, m.t]);
+  const TOP = full ? 90 : 15;
+  const y = d3.scaleLinear().domain([-5, TOP]).range([H - m.b, m.t]);
   const area = useMemo(() => {
     const pts = Array.from({ length: 361 }, (_, i) => [i, interp(horizon, i)] as [number, number]);
-    return d3.area<[number, number]>().x((d) => x(d[0])).y0(H - m.b).y1((d) => y(Math.min(15, Math.max(-5, d[1]))))(pts) ?? '';
-  }, [horizon]); // eslint-disable-line react-hooks/exhaustive-deps
-  const ridge = useMemo(() => d3.line<[number, number]>().x((d) => x(d[0])).y((d) => y(Math.min(15, Math.max(-5, d[1]))))(Array.from({ length: 361 }, (_, i) => [i, interp(horizon, i)] as [number, number])) ?? '', [horizon]); // eslint-disable-line react-hooks/exhaustive-deps
+    return d3.area<[number, number]>().x((d) => x(d[0])).y0(H - m.b).y1((d) => y(Math.min(TOP, Math.max(-5, d[1]))))(pts) ?? '';
+  }, [horizon, TOP]); // eslint-disable-line react-hooks/exhaustive-deps
+  const ridge = useMemo(() => d3.line<[number, number]>().x((d) => x(d[0])).y((d) => y(Math.min(TOP, Math.max(-5, d[1]))))(Array.from({ length: 361 }, (_, i) => [i, interp(horizon, i)] as [number, number])) ?? '', [horizon, TOP]); // eslint-disable-line react-hooks/exhaustive-deps
   const sunSegs = useMemo(() => trackPoints(vis, 'sun', -5), [vis]);
   const earthSegs = useMemo(() => trackPoints(vis, 'earth', -5), [vis]);
-  const ln = d3.line<{ az: number; el: number }>().x((p) => x(p.az)).y((p) => y(Math.min(15.5, p.el)));
+  const ln = d3.line<{ az: number; el: number }>().x((p) => x(p.az)).y((p) => y(Math.min(TOP + 0.5, p.el)));
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="hplot pano" role="img" aria-label="Horizon panorama with Sun and Earth tracks">
       <rect x={m.l} y={m.t} width={W - m.l - m.r} height={H - m.t - m.b} className="hp-bg" />
-      {[-5, 0, 5, 10, 15].map((e) => <g key={e}><line x1={m.l} x2={W - m.r} y1={y(e)} y2={y(e)} className="hp-grid" strokeDasharray={e === 0 ? '' : '2 3'} /><text x={m.l - 4} y={y(e) + 3} textAnchor="end" className="ptxt">{e}{'°'}</text></g>)}
+      {(full ? [0, 30, 60, 90] : [-5, 0, 5, 10, 15]).map((e) => <g key={e}><line x1={m.l} x2={W - m.r} y1={y(e)} y2={y(e)} className="hp-grid" strokeDasharray={e === 0 ? '' : '2 3'} /><text x={m.l - 4} y={y(e) + 3} textAnchor="end" className="ptxt">{e}{'°'}</text></g>)}
       {[0, 45, 90, 135, 180, 225, 270, 315, 360].map((a) => <g key={a}><line x1={x(a)} x2={x(a)} y1={m.t} y2={H - m.b} className="hp-grid" /><text x={x(a)} y={H - 7} textAnchor="middle" className={a % 90 === 0 ? 'compass' : 'ptxt'}>{({ 0: 'N', 90: 'E', 180: 'S', 270: 'W', 360: 'N' } as Record<number, string>)[a] ?? a}</text></g>)}
       {sunSegs.map((s, i) => <path key={`s${i}`} d={ln(s) ?? ''} fill="none" style={{ stroke: 'var(--sun)' }} strokeWidth={1.6} opacity={0.9} />)}
       {earthSegs.map((s, i) => <path key={`e${i}`} d={ln(s) ?? ''} fill="none" style={{ stroke: 'var(--earth)' }} strokeWidth={1.6} opacity={0.95} />)}
       <path d={area} className="hp-terrain hp-fill" />
       <path d={ridge} fill="none" className="hp-ridge" />
-      {now && now.earthEl >= -5 && <circle cx={x(now.earthAz)} cy={y(Math.min(15, now.earthEl))} r={6} style={{ fill: 'var(--earth)' }} className="hp-dot" />}
-      {now && now.sunEl >= -5 && <circle cx={x(now.sunAz)} cy={y(Math.min(15, now.sunEl))} r={6} style={{ fill: 'var(--sun)' }} className="hp-dot" />}
+      {now && now.earthEl >= -5 && <circle cx={x(now.earthAz)} cy={y(Math.min(TOP, now.earthEl))} r={6} style={{ fill: 'var(--earth)' }} className="hp-dot" />}
+      {now && now.sunEl >= -5 && <circle cx={x(now.sunAz)} cy={y(Math.min(TOP, now.sunEl))} r={6} style={{ fill: 'var(--sun)' }} className="hp-dot" />}
     </svg>
   );
 }

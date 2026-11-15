@@ -2,11 +2,23 @@
 
 *NASA Space Apps Challenge 2026 entry for the challenge "Lunar Landing Site Navigator". Not an official NASA product, and not endorsed by NASA or any space agency.*
 
-**Which lunar sites and dates give a lander sunlight and a line of sight to Earth, and why?** Lunar Landing Site Navigator ranks sites and dates by Sun and Earth visibility measured against the real local skyline (LOLA terrain, lunar curvature, Sun-disc partial visibility, Earth eclipses of the Sun), then shows the answer on a 3D Moon with a horizon plot, a shared timeline and a first-person "stand here" view. Type a request such as "our launch slipped from March to June 2028", edit the resulting query chips, and get ranked sites computed in your browser from precomputed static data. A measured example: a 4-month lat-lon box query ranks 64,800 cells in 0.59 s and refines 50 candidates in 0.14 s (WASM, Node; see `docs/VALIDATION.md`). The south pole, where the Sun skims the horizon and terrain decides everything, is the hard case it is built for. Apollo and other low-latitude sites are included for contrast.
+**Lunar Landing Site Navigator shows which lunar sites and dates give a lander sunlight and a line of sight to Earth, and why, using the real local skyline.**
 
-**Live demo:** https://lunar-site-navigator.cutenitki.workers.dev &nbsp;·&nbsp; **Repository:** https://github.com/rairai77/NASA-2026 (MIT) &nbsp;·&nbsp; **Video:** TODO(verify) add URL once uploaded
+**Try it:** Open the live demo and click *CLPS slipped to June 2028* on the welcome card.
+
+Why trust it (details in [`docs/VALIDATION.md`](docs/VALIDATION.md)):
+
+- **r = 0.976** between our sunlit fraction and NASA PGDA average illumination over 72,324 one-km cells at 85-90°S.
+- **IoU 0.81** between our "never lit" cells and the published permanent-shadow mask (97.7% of cells agree).
+- **Chandrayaan-3's sunset predicted within 3.6 h** in a replay of real missions (IM-1 +42.3 h, Blue Ghost 1 -3.4 h).
+
+**Live demo:** https://lunar-site-navigator.cutenitki.workers.dev &nbsp;·&nbsp; **Repository:** https://github.com/rairai77/NASA-2026 (MIT)
 
 ![Malapert Massif with terrain-true shadows computed in the browser, ranked results, horizon plot and Sun/Earth/comms timeline](docs/img/screenshot.png)
+
+## What it does
+
+It ranks sites and dates by Sun and Earth visibility measured against the real local skyline (LOLA terrain, lunar curvature, Sun-disc partial visibility, Earth eclipses of the Sun), then shows the answer on a 3D Moon with a horizon plot, a shared timeline and a first-person "stand here" view. Type a request such as "our launch slipped from March to June 2028", edit the resulting query chips, and get ranked sites computed in your browser from precomputed static data. The south pole, where the Sun skims the horizon and terrain decides everything, is the hard case it is built for. Apollo and other low-latitude sites are included for contrast. Performance example: a 4-month lat-lon box query ranks 64,800 cells in 0.59 s and refines 50 candidates in 0.14 s (WASM, Node; see `docs/VALIDATION.md`).
 
 ## Features
 
@@ -148,7 +160,7 @@ Thanks to the teams behind LRO and LOLA, LROC, NAIF/SPICE, JPL Horizons, the Pla
 
 ## AI tools used
 
-- **Claude Code** (Anthropic) was used throughout development. It wrote most of the code and documentation under the team's direction. TODO(verify) team to confirm that this wording and the extent of team review are accurate.
+- **Claude Code** (Anthropic) was used throughout development. It wrote most of the code and documentation under the team's direction.
 - **An LLM via OpenRouter** is used at runtime for one purpose only: turning a typed request into editable query chips (`POST /api/parse`, one forced tool call, output validated against the query schema). It is never in the ranking or metric path, writes no explanations, and the app works without it through the form UI. Model: `anthropic/claude-haiku-5.5`, set by `PARSE_MODEL` in `wrangler.toml`.
 - No generative AI was used to make imagery or data.
 

@@ -4,29 +4,40 @@ import {
   Sparkles, Telescope, TriangleAlert, X, Zap, GripVertical,
 } from 'lucide-react';
 import type { Query } from '../engine/api.ts';
-import { describeRegion, regionIsCoarse } from '../query/query.ts';
+import { defaultQuery, describeRegion, fmtWindowIncl, mergeQuery, objectiveText, regionIsCoarse } from '../query/query.ts';
 import { metricLabel, fmtMetric, METRIC_BY_NAME } from '../query/metrics.ts';
-import { applyNasaScreening, parseText, patchQuery, setPanel, useStore } from '../store.ts';
+import { applyNasaScreening, freshAnswer, parseText, patchQuery, runRank, setPanel, setQuery, useStore } from '../store.ts';
 import { FilterEditor, ObjectiveEditor, RegionEditor, WindowEditor, newFilter, newObjective } from './editors.tsx';
 import { Button, IconButton, NumInput, Popover, Spinner, useEscape, useWheelHScroll, type IconType } from './ui.tsx';
 import { PanelFields, panelSummary } from './PowerPanel.tsx';
 
-export interface Example { label: string; sub: string; text: string; icon: IconType }
+export interface Example { label: string; sub: string; text: string; icon: IconType; query: Query }
+/** Hand-written queries (same shape as the parser output) so the examples never depend on the language parser. */
+const ex = (partial: Partial<Query>): Query => mergeQuery(defaultQuery('2026-11-15'), partial);
 export const EXAMPLE_LIST: Example[] = [
   { label: 'CLPS slipped to June 2028', sub: 'Best south pole sites, 6+ days of Sun and Earth', icon: Rocket,
-    text: 'Our CLPS launch slipped from March to June 2028 — best south pole sites with at least 6 days of continuous sun and Earth' },
-  { label: 'Flattest near Shackleton', sub: 'Shortest night in 2027', icon: Telescope, text: 'Flattest site near Shackleton with the shortest night in 2027' },
-  { label: 'Apollo 11 vs Malapert', sub: 'Side by side, December 2026', icon: MapPin, text: 'Compare Apollo 11 with Malapert Massif for December 2026' },
-  { label: 'Longest sunlight in 2027', sub: 'Most hours of Sun at the pole', icon: Sparkles, text: 'Sites at the south pole with the most sun hours in 2027' },
-  { label: 'Sun and Earth, March 2027', sub: 'Most hours with both up', icon: CalendarDays, text: 'Best south pole sites in March 2027 with the most hours of Sun and Earth together' },
+    text: 'Our CLPS launch slipped from March to June 2028 — best south pole sites with at least 6 days of continuous sun and Earth',
+    query: ex({ window: { start: '2028-06-01', end: '2028-07-01' }, region: { type: 'polar', min_lat: -90, max_lat: -85 },
+      filters: [{ metric: 'longest_both_h', op: '>=', value: 144 }], objectives: [{ metric: 'both_hours', dir: 'max' }] }) },
+  { label: 'Flattest near Shackleton', sub: 'Shortest night in 2027', icon: Telescope, text: 'Flattest site near Shackleton with the shortest night in 2027',
+    query: ex({ window: { start: '2027-01-01', end: '2028-01-01' }, region: { type: 'circle', lat: -89.54, lon: 129.78, radius_km: 30 },
+      objectives: [{ metric: 'slope_deg', dir: 'min' }, { metric: 'longest_dark_h', dir: 'min' }] }) },
+  { label: 'Apollo 11 vs Malapert', sub: 'Side by side, December 2026', icon: MapPin, text: 'Compare Apollo 11 with Malapert Massif for December 2026',
+    query: ex({ window: { start: '2026-12-01', end: '2027-01-01' }, region: { type: 'sites', ids: ['apollo11', 'art3_malapert_massif'] },
+      objectives: [{ metric: 'sun_hours', dir: 'max' }] }) },
+  { label: 'Longest sunlight in 2027', sub: 'Most hours of Sun at the pole', icon: Sparkles, text: 'Sites at the south pole with the most sun hours in 2027',
+    query: ex({ window: { start: '2027-01-01', end: '2028-01-01' }, region: { type: 'polar', min_lat: -90, max_lat: -85 }, objectives: [{ metric: 'sun_hours', dir: 'max' }] }) },
+  { label: 'Sun and Earth, March 2027', sub: 'Most hours with both up', icon: CalendarDays, text: 'Best south pole sites in March 2027 with the most hours of Sun and Earth together',
+    query: ex({ window: { start: '2027-03-01', end: '2027-04-01' }, region: { type: 'polar', min_lat: -90, max_lat: -85 }, objectives: [{ metric: 'both_hours', dir: 'max' }] }) },
 ];
 export const EXAMPLES = EXAMPLE_LIST.map((e) => e.text);
 
-const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-function fmtWindow(a: string, b: string): string {
-  const [ya, ma, da] = a.slice(0, 10).split('-').map(Number), [yb, mb, db] = b.slice(0, 10).split('-').map(Number);
-  if (!ya || !yb) return `${a.slice(0, 10)} to ${b.slice(0, 10)}`;
-  return ya === yb ? `${MON[ma - 1]} ${da} – ${MON[mb - 1]} ${db}, ${yb}` : `${MON[ma - 1]} ${da}, ${ya} – ${MON[mb - 1]} ${db}, ${yb}`;
+/** Run an example: its sentence goes in the Ask box, its stored query is ranked directly (no parser round trip). */
+export function runExample(e: Example) {
+  useStore.setState({ askText: e.text, failedQuestion: null, unparsed: [], warnings: [], builderOpen: false });
+  setQuery(JSON.parse(JSON.stringify(e.query)) as Query, false);
+  freshAnswer();
+  runRank();
 }
 
 function ChipShell({ kind, label, value, icon: Ic, children, onRemove, extra, draggable, dragProps, warn, popClass = '' }: {
@@ -56,6 +67,8 @@ const opSym = (op: string) => op.replace('<=', '≤').replace('>=', '≥');
 export function Chips() {
   const q = useStore((s) => s.query);
   const unparsed = useStore((s) => s.unparsed);
+  const sites = useStore((s) => s.sites);
+  const replay = useStore((s) => s.replay);
   const edu = useStore((s) => s.educator);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const coarse = regionIsCoarse(q.region);
@@ -64,16 +77,16 @@ export function Chips() {
   return (
     <div className="chips" aria-label="Query chips" data-tour="chips">
       <Word>Rank</Word>
-      <ChipShell kind="region" icon={MapPin} value={`${describeRegion(q.region)}${coarse ? ' · coarse 10 km' : ''}`} warn={coarse ? 'Coarse 10 km screening: results are leads, not 20 m answers' : undefined}>
+      <ChipShell kind="region" icon={MapPin} value={`${describeRegion(q.region, (id) => sites.find((x) => x.id === id)?.name)}${coarse ? ' · coarse 10 km' : ''}`} warn={coarse ? 'Coarse 10 km screening: results are leads, not 20 m answers' : undefined}>
         <RegionEditor q={q} onChange={(region) => patchQuery({ region })} />
       </ChipShell>
       <Word>for</Word>
-      <ChipShell kind="window" icon={CalendarDays} value={fmtWindow(q.window.start, q.window.end)}>
+      <ChipShell kind="window" icon={CalendarDays} label={replay ? 'Mission check dates' : undefined} value={fmtWindowIncl(q.window.start, q.window.end)}>
         <WindowEditor q={q} onChange={(window) => patchQuery({ window })} />
       </ChipShell>
       <Word>by</Word>
       {q.objectives.map((o, i) => (
-        <ChipShell key={`o${i}`} kind="objective" value={<>{q.objectives.length > 1 && <b className="chip-n">{i + 1}</b>}{metricLabel(o.metric, edu)}</>}
+        <ChipShell key={`o${i}`} kind="objective" value={<>{q.objectives.length > 1 && <b className="chip-n">{i + 1}</b>}{objectiveText(o.metric, o.dir, edu)}</>}
           draggable dragProps={{
             onDragStart: (e) => { setDragIdx(i); e.dataTransfer.effectAllowed = 'move'; },
             onDragOver: (e) => { if (dragIdx !== null) e.preventDefault(); },
@@ -164,7 +177,8 @@ export function QueryStrip() {
 
 /** The hero control: natural-language question with examples on focus. */
 export function QueryInput({ onDone }: { onDone?: () => void }) {
-  const [text, setText] = useState('');
+  const text = useStore((s) => s.askText);
+  const setText = (t: string) => useStore.setState({ askText: t });
   const [focus, setFocus] = useState(false);
   const parsing = useStore((s) => s.parsing);
   const ref = useRef<HTMLInputElement>(null);
@@ -184,7 +198,7 @@ export function QueryInput({ onDone }: { onDone?: () => void }) {
         <div className="ask-pop" role="listbox" aria-label="Example questions" onMouseDown={(e) => e.preventDefault()}>
           <div className="ui-section-title">Try asking</div>
           {EXAMPLE_LIST.map((e) => (
-            <button key={e.label} role="option" aria-selected={false} className="ask-ex" onClick={() => { setText(e.text); submit(e.text); }}>
+            <button key={e.label} role="option" aria-selected={false} className="ask-ex" onClick={() => { runExample(e); ref.current?.blur(); setFocus(false); onDone?.(); }}>
               <e.icon aria-hidden /><span><b>{e.label}</b><small>{e.sub}</small></span>
             </button>
           ))}
@@ -197,6 +211,7 @@ export function QueryInput({ onDone }: { onDone?: () => void }) {
 export function QueryBuilder() {
   const open = useStore((s) => s.builderOpen);
   const q = useStore((s) => s.query);
+  const failed = useStore((s) => s.failedQuestion);
   const close = () => useStore.setState({ builderOpen: false });
   useEscape(open, close);
   if (!open) return null;
@@ -204,7 +219,8 @@ export function QueryBuilder() {
   return (
     <div className="modal-back" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
       <div className="modal" role="dialog" aria-label="Query builder">
-        <header><div><h2>Build query</h2><p className="modal-sub">Every change re-ranks immediately; the chips under the top bar always show the current query.</p></div>
+        <header><div><h2>Build query</h2><p className="modal-sub">Every change re-ranks immediately; the chips under the top bar always show the current query.</p>
+          {failed && <p className="modal-sub your-q">Your question: {'“'}{failed}{'”'}</p>}</div>
           <IconButton icon={X} label="Close" tip="none" onClick={close} /></header>
         <div className="modal-body builder">
           <section><h3><CalendarDays aria-hidden />Window</h3><WindowEditor q={q} onChange={(window) => patchQuery({ window })} /></section>

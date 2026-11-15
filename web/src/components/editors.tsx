@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Filter, Objective, Query } from '../engine/api.ts';
 import { RANKABLE, METRIC_BY_NAME, metricLabel } from '../query/metrics.ts';
-import { addDays, regionIsCoarse } from '../query/query.ts';
+import { addDays, fmtWindowIncl, regionIsCoarse } from '../query/query.ts';
 import { WINDOW_MAX, WINDOW_MIN, useStore, windowProblem } from '../store.ts';
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, TriangleAlert, X } from 'lucide-react';
 import { Button, IconButton, NumInput } from './ui.tsx';
@@ -31,7 +31,8 @@ export function WindowEditor({ q, onChange }: { q: Query; onChange: (w: Query['w
   return (
     <div className="ed">
       <label>Start (UTC)<input type="date" value={ds} min={WINDOW_MIN} max={WINDOW_MAX} aria-invalid={!!problem} onChange={(ev) => onStart(ev.target.value)} onBlur={() => commit(ds, de)} onKeyDown={key} /></label>
-      <label>End (exclusive)<input type="date" value={de} min={WINDOW_MIN} max={WINDOW_MAX} aria-invalid={!!problem} onChange={(ev) => edit(ds, ev.target.value)} onBlur={() => commit(ds, de)} onKeyDown={key} /></label>
+      <label>Last day (UTC)<input type="date" value={DATE_RE.test(de) ? addDays(de, -1) : de} min={WINDOW_MIN} max={addDays(WINDOW_MAX, -1)} aria-invalid={!!problem} onChange={(ev) => edit(ds, DATE_RE.test(ev.target.value) ? addDays(ev.target.value, 1) : ev.target.value)} onBlur={() => commit(ds, de)} onKeyDown={key} /></label>
+      {!problem && <p className="hint">{fmtWindowIncl(ds, de)}, both days included</p>}
       {problem && <p className="hint warnline" role="alert"><TriangleAlert aria-hidden size={13} /> {problem}</p>}
       <div className="ed-lbl">Shift the window</div>
       <div className="row shift">
@@ -52,14 +53,17 @@ export function RegionEditor({ q, onChange }: { q: Query; onChange: (r: Query['r
   const sites = useStore((st) => st.sites);
   const r = q.region;
   const [filter, setFilter] = useState('');
+  // "Circle around a site" waits for a site or centre before it ranks (the default centre would fall into coarse mode)
+  const [pendingCircle, setPendingCircle] = useState(false);
   const shown = useMemo(() => sites.filter((x) => x.name.toLowerCase().includes(filter.toLowerCase())), [sites, filter]);
   return (
     <div className="ed">
       <label>Region
-        <select value={r.type} onChange={(ev) => {
+        <select value={pendingCircle ? 'circle' : r.type} onChange={(ev) => {
           const t = ev.target.value;
+          setPendingCircle(t === 'circle' && r.type !== 'circle');
+          if (t === 'circle') return; // keeps the current circle, or waits for a centre
           if (t === 'polar') onChange({ type: 'polar', min_lat: -90, max_lat: -85 });
-          else if (t === 'circle') onChange({ type: 'circle', lat: -85, lon: 0, radius_km: 100 });
           else if (t === 'bbox') onChange({ type: 'bbox', west: -20, south: -30, east: 20, north: 10 });
           else if (t === 'global') onChange({ type: 'global' });
           else onChange({ type: 'sites', ids: sites.slice(0, 4).map((x) => x.id) });
@@ -73,40 +77,48 @@ export function RegionEditor({ q, onChange }: { q: Query; onChange: (r: Query['r
       </label>
       {r.type === 'polar' && (
         <div className="row">
-          <label>Min lat<NumInput value={r.min_lat} min={-90} max={90} onChange={(v) => onChange({ ...r, min_lat: v })} /></label>
-          <label>Max lat<NumInput value={r.max_lat} min={-90} max={90} onChange={(v) => onChange({ ...r, max_lat: v })} /></label>
+          <label>From latitude (°)<NumInput value={r.min_lat} min={-90} max={90} onChange={(v) => onChange({ ...r, min_lat: v })} /></label>
+          <label>To latitude (°)<NumInput value={r.max_lat} min={-90} max={90} onChange={(v) => onChange({ ...r, max_lat: v })} /></label>
         </div>
       )}
-      {r.type === 'circle' && (
-        <>
-          <label>Centre on a site
-            <select value="" onChange={(ev) => { const x = sites.find((y) => y.id === ev.target.value); if (x) onChange({ ...r, lat: x.lat, lon: x.lon }); }}>
-              <option value="">Pick a site…</option>
-              {sites.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
-            </select>
-          </label>
-          <div className="row">
-            <label>Lat<NumInput value={r.lat} onChange={(v) => onChange({ ...r, lat: v })} /></label>
-            <label>Lon<NumInput value={r.lon} onChange={(v) => onChange({ ...r, lon: v })} /></label>
-            <label>Radius km<NumInput value={r.radius_km} min={1} onChange={(v) => onChange({ ...r, radius_km: v })} /></label>
-          </div>
-        </>
+      {r.type === 'polar' && (
+        <p className="hint">South is negative: {'−'}90{'°'} is the pole.</p>
       )}
+      {(r.type === 'circle' || pendingCircle) && (() => {
+        const c = r.type === 'circle' ? r : { type: 'circle' as const, lat: -85, lon: 0, radius_km: 100 };
+        const commit = (n: typeof c) => { setPendingCircle(false); onChange(n); };
+        return (
+          <>
+            <label>Centre on a site
+              <select value="" onChange={(ev) => { const x = sites.find((y) => y.id === ev.target.value); if (x) commit({ ...c, lat: x.lat, lon: x.lon }); }}>
+                <option value="">Pick a site…</option>
+                {sites.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+              </select>
+            </label>
+            {pendingCircle && <p className="hint">Pick a site, or type a centre below, to start the search.</p>}
+            <div className="row">
+              <label>Centre latitude (°)<NumInput value={c.lat} onChange={(v) => commit({ ...c, lat: v })} /></label>
+              <label>Centre longitude (°)<NumInput value={c.lon} onChange={(v) => commit({ ...c, lon: v })} /></label>
+              <label>Radius (km)<NumInput value={c.radius_km} min={1} onChange={(v) => commit({ ...c, radius_km: v })} /></label>
+            </div>
+          </>
+        );
+      })()}
       {r.type === 'bbox' && (
         <>
           <div className="row">
-            <label>South lat<NumInput value={r.south} min={-90} max={90} onChange={(v) => onChange({ ...r, south: v })} /></label>
-            <label>North lat<NumInput value={r.north} min={-90} max={90} onChange={(v) => onChange({ ...r, north: v })} /></label>
+            <label>South latitude (°)<NumInput value={r.south} min={-90} max={90} onChange={(v) => onChange({ ...r, south: v })} /></label>
+            <label>North latitude (°)<NumInput value={r.north} min={-90} max={90} onChange={(v) => onChange({ ...r, north: v })} /></label>
           </div>
           <div className="row">
-            <label>West lon<NumInput value={r.west} min={-180} max={360} onChange={(v) => onChange({ ...r, west: v })} /></label>
-            <label>East lon<NumInput value={r.east} min={-180} max={360} onChange={(v) => onChange({ ...r, east: v })} /></label>
+            <label>West longitude (°)<NumInput value={r.west} min={-180} max={360} onChange={(v) => onChange({ ...r, west: v })} /></label>
+            <label>East longitude (°)<NumInput value={r.east} min={-180} max={360} onChange={(v) => onChange({ ...r, east: v })} /></label>
           </div>
           <p className="hint">West greater than east wraps across the antimeridian (180{'°'}).</p>
         </>
       )}
       {r.type === 'global' && <p className="hint">Searches every ~10 km cell on the Moon.</p>}
-      {regionIsCoarse(r) && <p className="hint warnline"><TriangleAlert aria-hidden size={13} /> Coarse 10 km screening: this region reaches outside the south polar cap (below {'−'}85{'°'}), so it uses the global grid (10 km cells, 6 h steps). Distance-to-PSR and distance-to-fault filters do not work there.</p>}
+      {regionIsCoarse(r) && <p className="hint warnline"><TriangleAlert aria-hidden size={13} /> This area reaches north of 85{'°'} S, so it uses the coarse 10 km global grid.</p>}
       {r.type === 'sites' && (
         <>
           <input className="txt" placeholder="Filter sites…" value={filter} onChange={(e) => setFilter(e.target.value)} />

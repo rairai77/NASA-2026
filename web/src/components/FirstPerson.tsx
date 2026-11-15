@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { countdowns, sampleAt, type Sample } from '../lib/countdown.ts';
 import { fmtUTC } from '../lib/time.ts';
-import { useStore, windowOf } from '../store.ts';
+import { setCursor, useStore, windowOf } from '../store.ts';
 import { COLORS } from './Timeline.tsx';
 import { Globe as GlobeIcon, Image as ImageIcon, Mountain, Sun, X } from 'lucide-react';
 import { getFirstPersonView, getFirstPersonViewer, lookAt, onFirstPersonView, setFov as setFov3d, setSkyline } from '../globe/firstPerson3d.ts';
 import { placeFor, shortName } from '../lib/places.ts';
-import { Button, IconButton, Segmented, Tag } from './ui.tsx';
+import { Button, Segmented, Tag } from './ui.tsx';
 
 const D2R = Math.PI / 180;
 const SUN_R = 0.2666; // deg
@@ -19,6 +19,17 @@ function makeStars(): Star[] {
   return Array.from({ length: 700 }, () => ({ az: rnd() * 360, el: Math.asin(rnd() * 0.95 - 0.1) / D2R, m: Math.pow(rnd(), 3), hue: rnd() }));
 }
 const STARS = makeStars();
+
+function useMedia(q: string): boolean {
+  const [m, setM] = useState(() => typeof window !== 'undefined' && window.matchMedia(q).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(q);
+    const h = () => setM(mq.matches);
+    h(); mq.addEventListener('change', h);
+    return () => mq.removeEventListener('change', h);
+  }, [q]);
+  return m;
+}
 
 function wrapDelta(a: number): number { return ((a + 540) % 360) - 180; }
 
@@ -299,6 +310,18 @@ function Ribbon({ sunAz, earthAz }: { sunAz?: number; earthAz?: number }) {
   );
 }
 
+/** Sky line for the info card. Bodies hidden by terrain say so; Earth is horizon-relative (above the local skyline). */
+function skyText(now: Sample, horizon?: Float32Array): string {
+  const deg = (v: number, n: number) => `${v.toFixed(n)}\u00b0`;
+  const sun = now.sunUp ? `Sun ${deg(now.sunEl, 2)}` : now.sunEl >= 0 ? `Sun ${deg(now.sunEl, 1)} \u00b7 behind terrain` : 'Sun below horizon';
+  let earth: string;
+  if (now.earthUp) {
+    const rel = Math.max(0, now.earthEl - (horizon && horizon.length ? interpH(horizon, now.earthAz) : 0));
+    earth = `Earth +${deg(rel, 1)} above skyline`;
+  } else earth = now.earthEl >= 0 ? `Earth ${deg(now.earthEl, 1)} \u00b7 behind terrain` : 'Earth below horizon';
+  return `${sun} \u00b7 ${earth}${now.eclipseFrac > 0 ? ` \u00b7 eclipse ${Math.round(now.eclipseFrac * 100)}%` : ''}`;
+}
+
 export function FirstPerson() {
   const open = useStore((s) => s.fpOpen);
   const id = useStore((s) => s.selected);
@@ -316,6 +339,8 @@ export function FirstPerson() {
   const [vex, setVex] = useState<1 | 3>(3);
   const [mode, setMode] = useState<'3d' | '2d'>('3d');
   const v3 = useFpView();
+  const phone = useMedia('(max-width: 899px)');
+  const touch = useMedia('(pointer: coarse)');
   const drag = useRef<{ x: number; y: number; az: number; yf: number } | null>(null);
   const win = useMemo(() => windowOf(query), [query]);
 
@@ -381,7 +406,7 @@ export function FirstPerson() {
       )}
       <div className="fp-meta">
         <span>{fmtUTC(cursor)}</span>
-        {now && <span>Sun {now.sunEl.toFixed(2)}{'°'}{now.sunUp ? '' : ' (down)'} {'·'} Earth {now.earthEl.toFixed(1)}{'°'}{now.earthUp ? '' : ' (hidden)'}{now.eclipseFrac > 0 ? ` · eclipse ${Math.round(now.eclipseFrac * 100)}%` : ''}</span>}
+        {now && <span>{skyText(now, d?.horizon?.elevDeg)}</span>}
       </div>
     </div>
   );
@@ -398,11 +423,11 @@ export function FirstPerson() {
         />
       )}
       {info}
-      <div className="fp-close"><IconButton solid tip="left" icon={X} label="Exit first-person view (Esc)" onClick={close} /></div>
+      <div className="fp-close"><Button className="fp-back" icon={X} onClick={close} aria-label="Back to map (Esc)"><span className="fp-back-lbl">Back to map (Esc)</span></Button></div>
       <div className="fp-bottom">
         {!is3d && vex === 3 && <Tag tone="warn">Vertical scale exaggerated 3{'\u00d7'} (Sun and Earth sizes stay true)</Tag>}
         <div className="fp-note">
-          <span>drag to look {'\u00b7'} wheel to zoom ({(is3d ? v3.fovDeg : fov).toFixed(0)}{'\u00b0'} FOV) {'\u00b7'} scrub the timeline below</span>
+          <span>{touch ? <>drag to look {'\u00b7'} pinch to zoom</> : <>drag to look {'\u00b7'} wheel to zoom</>} ({(is3d ? v3.fovDeg : fov).toFixed(0)}{'\u00b0'} FOV){phone ? '' : <> {'\u00b7'} scrub the timeline below</>}</span>
           {is3d && v3.skyline && <span><b>Teal line = computed skyline (LOLA)</b>, the authoritative horizon; distant 3D terrain is rendered coarser, so ridges can differ.</span>}
         </div>
         <div className="fp-row">
@@ -424,6 +449,12 @@ export function FirstPerson() {
           </div>
         </div>
       </div>
+      {phone && (
+        <div className="fp-time">
+          <input type="range" min={win[0]} max={win[1]} step={60} value={Math.min(win[1], Math.max(win[0], cursor))} aria-label={`Time (UTC): ${fmtUTC(cursor)}`}
+            onChange={(e) => setCursor(Number(e.target.value))} />
+        </div>
+      )}
       {is3d && <Ribbon sunAz={now?.sunAz} earthAz={now?.earthAz} />}
       {!d?.horizon && <div className="fp-flag"><Tag tone="info">Loading horizon{'…'}</Tag></div>}
     </div>

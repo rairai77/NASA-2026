@@ -202,7 +202,7 @@ export default function App() {
       <TopBar />
       <QueryStrip />
       {phone ? (
-        <main className="main phone">
+        <main className={`main phone ${fpOpen ? 'fp-open' : ''}`}>
           {globe}
           <div className="sheet" data-tab={tab}>
             {tab === 'results' && <LeftPanel allowCollapse={false} />}

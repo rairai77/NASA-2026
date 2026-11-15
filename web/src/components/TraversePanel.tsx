@@ -1,10 +1,11 @@
 // "Plan a traverse": selected site = start; goal picked on the globe or from a site list; path drawn by globe/traverseLayer.ts.
 import { useEffect, useMemo, useRef } from 'react';
 import { CircleAlert, CircleCheck, CircleX, Flag, MousePointerClick, Route, RotateCcw, X } from 'lucide-react';
-import { greatCircleKm } from '../lib/places.ts';
+import { greatCircleKm, placeFor } from '../lib/places.ts';
 import { fmtDur } from '../lib/time.ts';
 import { DEFAULT_LIMITS, clearTraverse, runTraverse, setTraverse, useStore, type Target } from '../store.ts';
 import { Button, IconButton, NumInput, Stat } from './ui.tsx';
+import { useCurrentRanks } from './LeftPanel.tsx';
 
 const fmtDist = (m: number) => (m >= 1000 ? { v: (m / 1000).toFixed(2), u: 'km' } : { v: String(Math.round(m)), u: 'm' });
 
@@ -14,10 +15,17 @@ export function TraversePanel({ target }: { target: Target }) {
   const sites = useStore((s) => s.sites);
   const cursor = useStore((s) => s.cursor);
   const { goal, limits, busy, result, error, picking } = tr;
+  const ranks = useCurrentRanks();
+  // goals: only sites in the current ranking (older searches are dropped), plus the catalog, always by name
   const options = useMemo(() => {
-    const ranked = Object.values(targets).filter((t) => t.kind === 'result' && t.id !== target.id).sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
-    return { ranked, sites: sites.filter((s) => s.id !== target.id) };
-  }, [targets, sites, target.id]);
+    const nameOf = (t: Target) => (t.kind === 'result' ? placeFor(t.lat, t.lon, sites).title : t.name);
+    const ranked = [...ranks.entries()]
+      .filter(([id]) => id !== target.id && targets[id] && !sites.some((s) => s.id === id))
+      .sort((a, b) => a[1] - b[1])
+      .map(([id, rank]) => ({ id, rank, name: nameOf(targets[id]) }));
+    return { ranked, sites: sites.filter((s) => s.id !== target.id), nameOf };
+  }, [targets, sites, target.id, ranks]);
+  const startName = target.kind === 'result' ? placeFor(target.lat, target.lon, sites).title : target.name;
   const setLim = (p: Partial<typeof limits>) => setTraverse({ limits: { ...limits, ...p } });
   const dist = goal ? greatCircleKm(target, goal) : 0;
 
@@ -26,7 +34,7 @@ export function TraversePanel({ target }: { target: Target }) {
       ? null
       : result.status === 'no_path'
         ? `No route: every path to the goal crosses ground steeper than ${limits.maxSlopeDeg}° (or the goal is on a slope that steep). Try raising the slope limit${limits.maxSlopeDeg < 30 ? ` (for example to ${Math.min(35, limits.maxSlopeDeg + 5)}°)` : ''}, or pick a goal on gentler ground.`
-        : `Timed out: the rover cannot get there within ${limits.maxHours} h at ${limits.speedMps} m/s${limits.requireSun ? ' while staying in sunlight (it waits out the dark)' : ''}${limits.requireEarth ? ' and in Earth view' : ''}. Raise the time budget, relax the Sun/Earth requirement, or choose a closer goal.`
+        : `The rover cannot get there within ${limits.maxHours} h at ${limits.speedMps} m/s${limits.requireSun ? ' while staying in sunlight (it waits out the dark)' : ''}${limits.requireEarth ? ' and in Earth view' : ''}. Raise the time budget, relax the Sun/Earth requirement, or choose a closer goal.`
   );
   const dd = result?.status === 'ok' ? fmtDist(result.distanceM) : null;
 
@@ -54,7 +62,7 @@ export function TraversePanel({ target }: { target: Target }) {
 
   return (
     <div className="pn-pane pn-trv">
-      <p className="pn-hint">Start: <b>{target.name}</b>, departing at the timeline cursor (<span className="mono">{new Date(cursor * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC</span>).</p>
+      <p className="pn-hint">Start: <b>{startName}</b>, departing at the timeline cursor (<span className="mono">{new Date(cursor * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC</span>).</p>
 
       {goal ? (
         <div className="pn-goal">
@@ -67,7 +75,7 @@ export function TraversePanel({ target }: { target: Target }) {
           <Button size="sm" icon={MousePointerClick} active={picking} onClick={() => setTraverse({ picking: !picking })}>{picking ? 'Click the globe…' : 'Pick on globe'}</Button>
           <select aria-label="Goal site" value="" onChange={(e) => {
             const id = e.target.value; if (!id) return;
-            const t = targets[id]; if (t) setTraverse({ goal: { lat: t.lat, lon: t.lon, name: t.name }, picking: false, result: null, error: null });
+            const t = targets[id]; if (t) setTraverse({ goal: { lat: t.lat, lon: t.lon, name: options.nameOf(t) }, picking: false, result: null, error: null });
           }}>
             <option value="">Goal: another site…</option>
             {options.ranked.length > 0 && <optgroup label="Ranked results">{options.ranked.map((t) => <option key={t.id} value={t.id}>#{t.rank} {t.name}</option>)}</optgroup>}
@@ -113,6 +121,9 @@ export function TraversePanel({ target }: { target: Target }) {
                 </div>
                 <p className="pn-small">Planner cell <span className="mono">{Math.round(result.cellM)} m</span></p>
               </>
+            )}
+            {result.status === 'timeout' && limits.maxHours < 168 && (
+              <Button size="sm" onClick={() => { setLim({ maxHours: 168 }); setTimeout(runTraverse, 0); }}>Retry with 168 h</Button>
             )}
             {result.status === 'no_path' && limits.maxSlopeDeg < 35 && (
               <Button size="sm" onClick={() => { setLim({ maxSlopeDeg: Math.min(35, limits.maxSlopeDeg + 5) }); setTimeout(runTraverse, 0); }}>Retry with {Math.min(35, limits.maxSlopeDeg + 5)}{'°'}</Button>

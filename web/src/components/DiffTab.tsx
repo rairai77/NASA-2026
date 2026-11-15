@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, FastForward, Save } from 'lucide-react';
 import { metricLabel, fmtMetric, TABLE_METRICS, STATIC_METRICS, METRIC_BY_NAME } from '../query/metrics.ts';
 import { parseWhen } from '../lib/time.ts';
@@ -6,6 +6,14 @@ import { saveScenario, slipLaunch, useStore, type Scenario } from '../store.ts';
 import { placeFor } from '../lib/places.ts';
 import { Button } from './ui.tsx';
 import { LaneStrip } from './LaneStrip.tsx';
+
+/** +1: more is better for a lander, -1: more is worse, 0: no good/bad direction. */
+const POLARITY: Record<string, 1 | -1> = {
+  sun_hours: 1, sun_frac: 1, longest_sun_h: 1, mean_sun_el_deg: 1, min_sun_el_deg: 1, sun_disc_frac_mean: 1,
+  earth_hours: 1, longest_earth_h: 1, both_hours: 1, longest_both_h: 1, comms_hours: 1, longest_comms_h: 1, energy_wh: 1, fault_dist_km: 1,
+  longest_dark_h: -1, longest_no_earth_h: -1, eclipse_hours: -1, marginal_hours: -1, battery_wh_needed: -1, slope_deg: -1,
+};
+const tone = (k: string, d: number): 'good' | 'bad' | 'neutral' => { const p = POLARITY[k]; return !p ? 'neutral' : d * p > 0 ? 'good' : 'bad'; };
 
 const days = (s: Scenario) => ((parseWhen(s.query.window.end) - parseWhen(s.query.window.start)) / 86400).toFixed(0);
 const winOf = (s: Scenario): [number, number] => [parseWhen(s.query.window.start), parseWhen(s.query.window.end)];
@@ -35,6 +43,15 @@ export function DiffTab() {
   const B = useStore((s) => s.scenB);
   const edu = useStore((s) => s.educator);
   const [weeks, setWeeks] = useState(4);
+  const [applied, setApplied] = useState(false);
+  const changesRef = useRef<HTMLHeadingElement>(null);
+  const wantScroll = useRef(false);
+  // after Apply, bring the "Biggest changes" section into view once B has been saved
+  useEffect(() => {
+    if (!wantScroll.current || !A || !B) return;
+    wantScroll.current = false;
+    requestAnimationFrame(() => changesRef.current?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' }));
+  }, [A, B]);
   const keys = [...TABLE_METRICS, ...STATIC_METRICS];
   const rows = A && B ? keys.map((k) => ({ k, a: A.metrics[k], b: B.metrics[k] })).filter((r) => r.a !== undefined && r.b !== undefined) : [];
   const chips = rows
@@ -63,16 +80,17 @@ export function DiffTab() {
           <span>Slip by</span>
           <input className="num" type="number" min={-52} max={52} value={weeks} onChange={(e) => setWeeks(parseInt(e.target.value) || 0)} aria-label="weeks" />
           <span>weeks</span>
-          <Button variant="primary" size="sm" icon={FastForward} onClick={() => slipLaunch(weeks)} title="Pins the current result as A, shifts the window, re-ranks and saves B">Apply</Button>
+          <Button variant="primary" size="sm" icon={FastForward} onClick={() => { wantScroll.current = true; setApplied(true); slipLaunch(weeks); }} title="Pins the current result as A, shifts the window, re-ranks and saves B">Apply</Button>
         </div>
+        {applied && <p className="pn-note" role="status">Dates changed for the whole app: the query bar, results and timeline now use the shifted window.</p>}
       </section>
       {A && B && (
         <>
-          <h3 className="ui-section-title">Biggest changes (B vs A)</h3>
+          <h3 className="ui-section-title" ref={changesRef} style={{ scrollMarginTop: 8 }}>Biggest changes (B vs A)</h3>
           <div className="pn-dchips">
             {chips.length === 0 && <span className="pn-hint">No notable differences.</span>}
             {chips.map((c) => (
-              <span key={c.k} className={`pn-dchip ${c.d > 0 ? 'up' : 'down'}`}>
+              <span key={c.k} className={`pn-dchip ${tone(c.k, c.d)}`}>
                 {c.d > 0 ? <ArrowUp aria-hidden /> : <ArrowDown aria-hidden />}{metricLabel(c.k, edu)} {c.d > 0 ? '+' : '−'}{fmtMetric(c.k, Math.abs(c.d)).replace(/ \(.*\)/, '')}
               </span>
             ))}
@@ -88,13 +106,13 @@ export function DiffTab() {
                     <th>{metricLabel(r.k, edu)}</th>
                     <td>{fmtMetric(r.k, r.a).replace(/ \(.*\)/, '')}</td>
                     <td>{fmtMetric(r.k, r.b).replace(/ \(.*\)/, '')}</td>
-                    <td className={tiny ? '' : d > 0 ? 'dup' : 'ddown'}>{tiny ? '=' : `${d > 0 ? '▲ +' : '▼ −'}${fmtMetric(r.k, Math.abs(d)).replace(/ \(.*\)/, '')}`}</td>
+                    <td className={tiny ? '' : tone(r.k, d)}>{tiny ? '=' : `${d > 0 ? '▲ +' : '▼ −'}${fmtMetric(r.k, Math.abs(d)).replace(/ \(.*\)/, '')}`}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
-          <p className="pn-hint">{'▲'} blue = B higher than A, {'▼'} orange = B lower. Higher is not always better (e.g. longest dark run).</p>
+          <p className="pn-hint">Green = better for a lander in B, orange = worse (more Sun, Earth or comms is better; a longer dark run is worse). {'▲'} / {'▼'} show whether B is higher or lower than A. Grey = no better or worse.</p>
         </>
       )}
     </div>

@@ -37,7 +37,7 @@ const MOCK_ARGS = {
   ],
   objectives: [{ metric: "slope_deg", dir: "min" }],
   k: 50,
-  min_separation_km: 2,
+  min_separation_km: 10,
   unparsed: ["with a nice view"],
 };
 

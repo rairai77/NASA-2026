@@ -1,12 +1,28 @@
+import { useEffect, useState } from 'react';
 import { CalendarClock, Play, TriangleAlert } from 'lucide-react';
-import { fmtUTC } from '../lib/time.ts';
+import { fmtUTC, parseWhen } from '../lib/time.ts';
 import { startReplay, useStore } from '../store.ts';
 import { Tag } from './ui.tsx';
 
 const KIND_LABEL: Record<string, string> = { sunset: 'Sunset', sleep_before_night: 'Slept before night', anomaly: 'Anomaly', crash: 'Crash' };
 const kindOf = (m: unknown) => (m as { end_kind?: string }).end_kind ?? '';
 
+interface Pred { predicted_sunset_utc?: string | null }
+/** Precomputed predicted-sunset table (same file the replay uses); missions missing from it only get a delta once opened. */
+function usePreds(): Record<string, Pred> | null {
+  const [p, setP] = useState<Record<string, Pred> | null>(null);
+  useEffect(() => {
+    let live = true;
+    fetch('/data/missions_pred.json')
+      .then(async (r) => (r.ok && !(r.headers.get('content-type') ?? '').includes('html') ? ((await r.json()) as Record<string, Pred>) : null))
+      .then((j) => live && setP(j)).catch(() => {});
+    return () => { live = false; };
+  }, []);
+  return p;
+}
+
 export function ReplayTab() {
+  const preds = usePreds();
   const missions = useStore((s) => s.missions);
   const replay = useStore((s) => s.replay);
   const real = missions.filter((m) => m.landed_utc);
@@ -41,16 +57,29 @@ export function ReplayTab() {
         </section>
       )}
       <h3 className="ui-section-title">Missions</h3>
+      <p className="pn-hint">Each card shows our predicted sunset minus the reported end. <b>+</b> means we predicted sunset later than reality, <b>−</b> earlier.</p>
       <ul className="pn-mlist">
-        {real.map((m) => (
+        {real.map((m) => {
+          const ps = preds?.[m.id]?.predicted_sunset_utc;
+          const dh = ps && m.end_utc ? (parseWhen(ps) - parseWhen(m.end_utc)) / 3600 : null;
+          const notSun = ['anomaly', 'crash'].includes(kindOf(m));
+          return (
           <li key={m.id}>
             <button className={`pn-mission ${replay?.id === m.id ? 'is-sel' : ''}`} onClick={() => startReplay(m.id)}>
               <span className="pn-mission-t"><b>{m.name}</b><small className="mono">{m.landed_utc.slice(0, 10)} {'·'} {m.lat.toFixed(2)}{'°'}, {m.lon.toFixed(2)}{'°'}</small></span>
-              <Tag tone={['anomaly', 'crash'].includes(kindOf(m)) ? 'warn' : undefined}>{KIND_LABEL[kindOf(m)] ?? (kindOf(m) || 'end')}</Tag>
+              <span className="pn-mission-r">
+                <Tag tone={notSun ? 'warn' : undefined}>{KIND_LABEL[kindOf(m)] ?? (kindOf(m) || 'end')}</Tag>
+                {dh !== null && (
+                  <span className={`pn-mission-d ${notSun ? '' : Math.abs(dh) <= 12 ? 'ok' : 'warn'}`} title={notSun ? 'Not a sunset end, so this is not a prediction error' : 'Predicted sunset minus reported end'}>
+                    {dh >= 0 ? '+' : '−'}{Math.abs(dh).toFixed(1)} h
+                  </span>
+                )}
+              </span>
               <Play aria-hidden className="pn-mission-go" />
             </button>
           </li>
-        ))}
+          );
+        })}
       </ul>
       {real.length === 0 && <p className="pn-hint">No missions loaded.</p>}
     </div>

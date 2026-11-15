@@ -6,7 +6,7 @@ import { DAY, clamp, parseWhen, toDay } from './lib/time.ts';
 import { readPref } from './lib/theme.ts';
 import { decodeState, type ShareState, type TargetStub } from './lib/share.ts';
 import { METRIC_BY_NAME } from './query/metrics.ts';
-import { DEFAULT_PANEL, addDays, defaultQuery, mergeQuery } from './query/query.ts';
+import { DEFAULT_PANEL, addDays, defaultQuery, mergeQuery, prefillFromText } from './query/query.ts';
 
 export interface Target {
   id: string;
@@ -70,6 +70,10 @@ interface State {
   targets: Record<string, Target>;
 
   query: Query;
+  /** text in the Ask box (kept when parsing fails so the builder can show it) */
+  askText: string;
+  /** the question the language parser could not read; shown in the query builder */
+  failedQuestion: string | null;
   unparsed: string[];
   warnings: string[];
   parsing: boolean;
@@ -132,7 +136,7 @@ export function windowProblem(w: { start: string; end: string }): string | null 
   if (!ok(w.start) || !ok(w.end)) return 'Enter complete dates';
   const a = w.start.slice(0, 10), b = w.end.slice(0, 10);
   if (a < WINDOW_MIN || a > WINDOW_MAX || b < WINDOW_MIN || b > WINDOW_MAX) return 'Dates must be between 2023 and 2030';
-  if (parseWhen(w.start) >= parseWhen(w.end)) return 'End must be after start';
+  if (parseWhen(w.start) >= parseWhen(w.end)) return 'Last day must not be before the start';
   return null;
 }
 
@@ -152,7 +156,7 @@ export const useStore = create<State>(() => ({
   panel: q0.power ?? { ...DEFAULT_PANEL },
   traverse: { goal: null, picking: false, limits: { ...DEFAULT_LIMITS }, busy: false, result: null, startId: null, error: null },
   info: null, sites: [], missions: [], curated: {}, targets: {},
-  query: q0, unparsed: [], warnings: [], parsing: false, results: null, ranking: false, rankSkipped: false, progress: null,
+  query: q0, askText: '', failedQuestion: null, unparsed: [], warnings: [], parsing: false, results: null, ranking: false, rankSkipped: false, progress: null,
   selected: null, compare: [], data: {},
   cursor: clamp(restored?.t ?? w0 + (w1 - w0) * 0.1, w0, w1), playing: false, speed: 6 * 3600, view: [w0, w1],
   layers: { sites: true, results: true, faults: false, keepout: false, keepoutKm: 5, shadows: true },
@@ -231,9 +235,48 @@ export function scheduleRank(delay = 350) {
 
 let rankSeq = 0;
 let keepRestoredSelection = false;
+/** a share link that carries its own cursor keeps it on the first ranking */
+let skipDaylightOnce = restored?.t != null;
+
+/** Wait for a target's visibility series of the active window (refreshData is driven by the App effect too). */
+function waitForVis(id: string, seq: number): Promise<VisResult | null> {
+  return new Promise((resolve) => {
+    const ready = () => { const d = get().data[id]; return d?.vis && d.key === dataKey() ? d.vis : null; };
+    const v0 = ready();
+    if (v0) { resolve(v0); return; }
+    void refreshData();
+    const done = (v: VisResult | null) => { un(); clearTimeout(to); resolve(v); };
+    const un = useStore.subscribe(() => { if (seq !== rankSeq) done(null); else { const v = ready(); if (v) done(v); } });
+    const to = setTimeout(() => done(null), 30000);
+  });
+}
+
+/** Put the cursor in the middle of the #1 site's longest stretch where Sun and Earth are both up. */
+async function focusDaylight(id: string, seq: number) {
+  const vis = await waitForVis(id, seq);
+  if (!vis || seq !== rankSeq || get().selected !== id) return;
+  let best = 0, bs = -1, be = -1, cs = -1;
+  for (let i = 0; i <= vis.t.length; i++) {
+    const up = i < vis.t.length && vis.sunFrac[i] >= 0.5 && vis.earthUp[i] === 1;
+    if (up && cs < 0) cs = i;
+    if (!up && cs >= 0) { if (i - cs > best) { best = i - cs; bs = cs; be = i - 1; } cs = -1; }
+  }
+  if (bs < 0) { // never both up: fall back to the longest Sun-only stretch
+    for (let i = 0; i <= vis.t.length; i++) {
+      const up = i < vis.t.length && vis.sunFrac[i] >= 0.5;
+      if (up && cs < 0) cs = i;
+      if (!up && cs >= 0) { if (i - cs > best) { best = i - cs; bs = cs; be = i - 1; } cs = -1; }
+    }
+  }
+  if (bs >= 0) setCursor((vis.t[bs] + vis.t[be]) / 2);
+}
 export function keepSelection() { keepRestoredSelection = true; }
+/** the next ranking answers a new question (example or Ask): always select, fly to and focus its #1 */
+let forceFocus = false;
+export function freshAnswer() { forceFocus = true; }
 export async function runRank() {
   const seq = ++rankSeq;
+  const force = forceFocus; forceFocus = false;
   const q = get().query;
   // Mission replay of a window outside the polar index months: nothing to rank, show the mission site only.
   if (get().replay && outsideIndex(...window_(q))) { set({ ranking: false, progress: null }); return; }
@@ -257,12 +300,23 @@ export async function runRank() {
     set({ results: res, ranking: false, progress: null });
     const s = get();
     if (ts.length) {
+      const keepCursor = skipDaylightOnce; skipDaylightOnce = false;
       if (q.region.type === 'sites' && ts.length <= MAX_COMPARE) {
         set({ compare: ts.map((t) => t.id), selected: ts[0].id });
+        if (!keepCursor && !s.replay) { flyTo(ts[0].id); void focusDaylight(ts[0].id, seq); }
       } else if (keepRestoredSelection) {
         keepRestoredSelection = false;
-      } else if (!s.selected || s.selected.startsWith('r:')) {
+      } else if (s.replay && s.selected?.startsWith('m:')) {
+        // mission check keeps its own site selected
+      } else if (force || !s.selected || s.selected.startsWith('r:')) {
+        // a new #1: select and fly to it and put the cursor in its longest Sun-and-Earth stretch.
+        // A chip edit that leaves #1 unchanged keeps the view and cursor where the user had them.
+        const changed = s.selected !== ts[0].id;
         set({ selected: ts[0].id });
+        if (force || changed) {
+          flyTo(ts[0].id);
+          if (!keepCursor) void focusDaylight(ts[0].id, seq);
+        }
       }
     }
   } catch (e) {
@@ -275,7 +329,7 @@ export async function runRank() {
 
 // ---------------------------------------------------------------------------------------
 export async function parseText(text: string) {
-  set({ parsing: true });
+  set({ parsing: true, askText: text });
   try {
     const res = await fetch('/api/parse', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -286,14 +340,16 @@ export async function parseText(text: string) {
     const j = (await res.json()) as { query?: unknown; unparsed?: string[]; warnings?: string[] };
     if (!j || typeof j.query !== 'object') throw new Error('bad response');
     const q = mergeQuery(defaultQuery(today), j.query);
-    set({ unparsed: j.unparsed ?? [], warnings: j.warnings ?? [], parsing: false });
+    set({ unparsed: j.unparsed ?? [], warnings: j.warnings ?? [], parsing: false, failedQuestion: null });
     if (j.warnings?.length) toast(`Parser warnings: ${j.warnings.join('; ')}`);
     setQuery(q, false);
+    freshAnswer();
     runRank();
   } catch (e) {
     console.warn('[parse] failed', e);
-    set({ parsing: false, builderOpen: true });
-    toast('Natural-language parsing is unavailable here. Use the query builder instead.');
+    set({ parsing: false, builderOpen: true, askText: text, failedQuestion: text });
+    setQuery(prefillFromText(text, get().query), true);
+    toast('Couldn\u2019t read that question right now, so we opened the query builder.');
   }
 }
 
@@ -407,6 +463,10 @@ function loadPred() {
 }
 const isoSec = (t: number) => new Date(t * 1000).toISOString().slice(0, 19) + 'Z';
 
+/** the query the user had before Mission check swapped in a 2023 window */
+let preReplayQuery: Query | null = null;
+export const replayQueryActive = () => preReplayQuery !== null;
+
 export async function startReplay(mid: string) {
   const m = get().missions.find((x) => x.id === mid);
   if (!m) return;
@@ -426,6 +486,7 @@ export async function startReplay(mid: string) {
   }
   const tid = `m:${mid}`;
   registerTargets([{ id: tid, name: m.name, lat: m.lat, lon: m.lon, kind: 'point', group: 'Mission replay' }]);
+  if (!get().replay || !preReplayQuery) preReplayQuery = get().query;
   const q: Query = { ...get().query, window: { start: isoSec(landed - DAY), end: isoSec(landed + 16 * DAY) } };
   const markers: Marker[] = [{ t: landed, label: 'Landing', kind: 'landing' }];
   if (predSunset) markers.push({ t: predSunset, label: 'Predicted sunset', kind: 'pred' });
@@ -508,6 +569,15 @@ export async function runTraverse() {
     setTraverse({ busy: false, error: String((e as Error).message ?? e) });
   }
 }
+// leaving Mission check (another left tab) restores the query the user had before it
+useStore.subscribe((s, p) => {
+  if (p.leftTab === 'replay' && s.leftTab !== 'replay' && preReplayQuery) {
+    const q = preReplayQuery; preReplayQuery = null;
+    const [a, b] = window_(q);
+    set((st) => ({ query: q, view: [a, b], cursor: clamp(st.cursor, a, b), replay: null, markers: [], playUntil: null, playing: false, selected: st.selected?.startsWith('m:') ? null : st.selected }));
+    scheduleRank(0);
+  } else if (preReplayQuery && !s.replay) preReplayQuery = null; // a new query replaced the mission window
+});
 // a traverse belongs to the site it was planned from
 useStore.subscribe((s, p) => {
   if (s.selected !== p.selected && (s.traverse.result || s.traverse.goal) && !s.traverse.picking && s.traverse.startId !== s.selected) clearTraverse();

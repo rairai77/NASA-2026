@@ -1,5 +1,12 @@
 // Numbers copied from docs/VALIDATION.md (run scripts named there). Keep in sync by hand; never show a placeholder as a result.
-export const HEADLINE = 'Sun and Earth directions match JPL Horizons to under 0.0001 degrees; skylines come from LOLA terrain with lunar curvature; limits are stated.';
+export const HEADLINE = 'Our Sun and Earth visibility agrees with NASA’s independent polar illumination maps, a replay of three real landers, and the published permanent-shadow mask; limits are stated below.';
+
+export const HEADLINE_CARDS: { k: string; n: string; m: string; c: string }[] = [
+  { k: 'NASA PGDA illumination', n: 'r = 0.976', m: 'Where we say the Sun shines, NASA’s independent polar maps agree, cell by cell.', c: '72,324 one-km cells, 85–90°S. Ours is 2026–2030, PGDA is an 18.6-year mean, so we run 0.023 lower on average (RMSE 0.039).' },
+  { k: 'Mission replay', n: '3.6 h', m: 'We predicted Chandrayaan-3’s sunset 3.6 h after its reported end of operations. IM-1 +42.3 h, Blue Ghost 1 −3.4 h.', c: 'Three missions only. IM-1 was a tipped lander that died before true sunset. Reported end times are uncertain by hours.' },
+  { k: 'Permanent shadow overlap', n: 'IoU 0.81', m: 'Our “never lit” cells and NASA’s published shadow mask overlap on 97.7% of cells.', c: '7,174 dark in both; 1,633 dark only in ours (shorter window, half-disc rule).' },
+  { k: 'JPL Horizons ephemeris', n: '3e-5°', m: 'Sun and Earth directions match JPL Horizons to within 3e-5°, far inside the 0.05° target.', c: 'Mostly shows the SPICE data is read correctly. It checks geometry, not terrain.' },
+];
 
 export const METHODS: { h: string; t: string }[] = [
   { h: 'Sun and Earth direction', t: 'NAIF SPICE (SpiceyPy) with the DE440 ephemeris gives the Sun and Earth vectors in the Moon’s mean-Earth (MOON_ME) frame every 15 minutes for 2026–2030. A site’s east-north-up frame converts them to azimuth and elevation. Libration is included because the frame is the real, time-varying lunar orientation.' },

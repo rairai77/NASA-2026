@@ -7,13 +7,14 @@ import { ChevronDown, ChevronUp, HelpCircle, Info, Pause, Play, StepBack, StepFo
 import { sampleAt } from '../lib/countdown.ts';
 import { placeFor, shortName } from '../lib/places.ts';
 import { cssVar, palette, useTheme } from '../lib/theme.ts';
-import { Button, Dot, IconButton, Kbd, Segmented, Tooltip, Why } from './ui.tsx';
+import { Button, Dot, IconButton, Kbd, Popover, Segmented, Tooltip, Why } from './ui.tsx';
 
 // Static (dark) colours for code that draws on the always-dark globe/first-person view. Timeline canvases read theme-aware values from palette().
 export const COLORS = { sun: '#f5b700', earth: '#4fa3ff', both: '#ffffff', eclipse: '#ff4fd8' };
 const ROW_H = 56;
 const AXIS_H = 26;
-export const COMMS_COLORS = { clear: '#34d399', marginal: '#f59e0b', gap: '#ef4444' };
+const MAX_ROWS_VISIBLE = 4;
+export const COMMS_COLORS = { clear: '#34d399', marginal: '#b388ff', gap: '#ef4444' };
 // lane geometry inside a row (offsets from the row's y): sun, earth, both, comms
 const LANES: [number, number][] = [[3, 11], [16, 11], [29, 9], [40, 9]];
 
@@ -114,22 +115,32 @@ function Help({ relay }: { relay: boolean }) {
     [<><Kbd>Shift</Kbd> + <Kbd>{'\u2190'}</Kbd> <Kbd>{'\u2192'}</Kbd></>, 'step 1 day'],
     [<Kbd key="w">wheel</Kbd>, 'zoom the timeline'],
     [<><Kbd>Shift</Kbd> + <Kbd>wheel</Kbd></>, 'pan'],
-    [<Kbd key="d">drag</Kbd>, 'pan; drag the ruler or handle to scrub'],
+    [<Kbd key="d">drag</Kbd>, 'scrub the time cursor'],
+    [<><Kbd>Shift</Kbd> + <Kbd>drag</Kbd></>, 'pan (or middle-drag)'],
     [<Kbd key="c">click</Kbd>, 'move the cursor there'],
   ];
-  return (
-    <Tooltip side="top" wrap content={
-      <div className="tl-help-card">
-        <div className="ui-section-title">Shortcuts</div>
-        {rows.map(([k, d], i) => <div key={i} className="tl-help-row"><span>{k}</span><span>{d}</span></div>)}
-        <div className="tl-help-legend">
-          <div className="ui-section-title">Legend</div>
-          <Legend relay={relay} />
-        </div>
+  const card = (
+    <div className="tl-help-card">
+      <div className="ui-section-title">Shortcuts</div>
+      {rows.map(([k, d], i) => <div key={i} className="tl-help-row"><span>{k}</span><span>{d}</span></div>)}
+      <div className="tl-help-legend">
+        <div className="ui-section-title">Legend</div>
+        <Legend relay={relay} />
       </div>
-    }>
-      <IconButton tip="none" size="sm" icon={HelpCircle} label="Timeline help and legend" />
-    </Tooltip>
+    </div>
+  );
+  return (
+    <>
+      <span className="desk-only">
+        <Tooltip side="top" wrap content={card}>
+          <IconButton tip="none" size="sm" icon={HelpCircle} label="Timeline help and legend" />
+        </Tooltip>
+      </span>
+      {/* phone: hover tooltips do not exist, so help opens on tap */}
+      <Popover className="phone-only tl-help-pop" trigger={(open, toggle) => <IconButton tip="none" size="sm" icon={HelpCircle} label="Timeline help and legend" active={open} onClick={toggle} />}>
+        {card}
+      </Popover>
+    </>
   );
 }
 
@@ -179,6 +190,7 @@ function Header({ win, zoomed, allowCollapse }: { win: [number, number]; zoomed:
         <Help relay={relay} />
         {allowCollapse && <IconButton tip="top" size="sm" icon={collapsed ? ChevronUp : ChevronDown} label={collapsed ? 'Expand the timeline' : 'Collapse the timeline to its header'} onClick={() => useStore.setState({ timelineCollapsed: !collapsed })} />}
       </div>
+      <div className="tl-legend-compact"><Legend relay={relay} /></div>
     </div>
   );
 }
@@ -280,15 +292,16 @@ export function Timeline({ allowCollapse = true }: { allowCollapse?: boolean }) 
   const localX = (e: React.PointerEvent) => e.clientX - wrapRef.current!.getBoundingClientRect().left;
 
   const onDown = (e: React.PointerEvent) => {
-    const rect = wrapRef.current!.getBoundingClientRect();
-    const y = e.clientY - rect.top, x = localX(e);
-    const onCursor = Math.abs(x - xOf(cursor)) < 7;
+    const x = localX(e);
+    if (e.button !== 0 && e.button !== 1) return;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    if (y < AXIS_H || onCursor) { drag.current = { mode: 'scrub', x0: x, view0: view, moved: true }; setCursor(tOf(x)); }
-    else drag.current = { mode: 'pan', x0: x, view0: view, moved: false };
+    // press-drag anywhere scrubs the cursor; Shift-drag or middle-drag pans the view
+    if (e.shiftKey || e.button === 1) { e.preventDefault(); drag.current = { mode: 'pan', x0: x, view0: view, moved: false }; wrapRef.current!.dataset.drag = 'pan'; }
+    else { drag.current = { mode: 'scrub', x0: x, view0: view, moved: true }; setCursor(tOf(x)); wrapRef.current!.dataset.drag = 'scrub'; }
   };
   const onMove = (e: React.PointerEvent) => {
     const x = localX(e);
+    wrapRef.current!.dataset.pan = e.shiftKey ? '1' : '';
     setHover({ x, y: e.clientY - wrapRef.current!.getBoundingClientRect().top });
     const d = drag.current;
     if (!d) return;
@@ -306,14 +319,19 @@ export function Timeline({ allowCollapse = true }: { allowCollapse?: boolean }) 
   const onUp = (e: React.PointerEvent) => {
     const d = drag.current;
     drag.current = null;
+    if (wrapRef.current) wrapRef.current.dataset.drag = '';
     if (d && d.mode === 'pan' && !d.moved) setCursor(tOf(localX(e)));
   };
 
   const zoomed = view[0] > win[0] + 1 || view[1] < win[1] - 1;
-  const rowName = (id: string) => {
+  // distinguishing part first: the name for named places, the coordinates for unnamed ones
+  const rowName = (id: string): { name: string; sub?: string } => {
     const t = targets[id];
-    if (!t) return id;
-    return t.kind === 'site' ? shortName(t.name) : placeFor(t.lat, t.lon, sites).title;
+    if (!t) return { name: id };
+    const coords = fmtCoords(t.lat, t.lon);
+    if (t.kind === 'site') return { name: shortName(t.name), sub: coords };
+    const pl = placeFor(t.lat, t.lon, sites);
+    return pl.near ? { name: pl.title, sub: coords } : { name: coords };
   };
   let hoverCard: React.ReactNode = null;
   if (hover && !drag.current) {
@@ -339,18 +357,19 @@ export function Timeline({ allowCollapse = true }: { allowCollapse?: boolean }) 
   return (
     <section className={`timeline ${collapsed ? 'is-collapsed' : ''}`} aria-label="Shared timeline" data-tour="timeline">
       <Header win={win} zoomed={zoomed} allowCollapse={allowCollapse} />
-      <div className="tl-body" style={{ height: H }} hidden={collapsed}>
-        <div className="tl-labels">
+      <div className="tl-body" style={{ height: Math.min(H, AXIS_H + MAX_ROWS_VISIBLE * ROW_H) }} hidden={collapsed}>
+        <div className="tl-labels" style={{ height: H }}>
           <div style={{ height: AXIS_H }} />
           {ids.length === 0 && <div className="tl-empty" style={{ height: ROW_H }}>Select a site or result</div>}
           {ids.map((id) => {
             const t = targets[id];
             const nm = rowName(id);
+            const lbl = nm.sub ? `${nm.name} (${nm.sub})` : nm.name;
             return (
-              <div key={id} className={`tl-label ${selected === id ? 'sel' : ''}`} style={{ height: ROW_H }} onClick={() => select(id)} title={t?.name}>
-                <span className="nm">{t?.rank ? <span className={`tl-rank ${t.rank === 1 ? 'gold' : ''}`}>{t.rank}</span> : null}<span className="t">{nm}</span></span>
+              <div key={id} className={`tl-label ${selected === id ? 'sel' : ''}`} style={{ height: ROW_H }} onClick={() => select(id)} title={t && t.kind === 'site' ? t.name : lbl}>
+                <span className="nm">{t?.rank ? <span className={`tl-rank ${t.rank === 1 ? 'gold' : ''}`}>{t.rank}</span> : null}<span className="tn"><span className="t">{nm.name}</span>{nm.sub && <span className="tsub">{nm.sub}</span>}</span></span>
                 {data[id]?.loading && <span className="ui-spinner" aria-label="loading" />}
-                {id !== selected && <button className="tl-x" aria-label="Remove from timeline" onClick={(e) => { e.stopPropagation(); toggleCompare(id); }}><X aria-hidden /></button>}
+                {id !== selected && <button className="tl-x" aria-label={`Remove ${nm.name} from timeline`} onClick={(e) => { e.stopPropagation(); toggleCompare(id); }}><X aria-hidden /></button>}
                 <span className="tl-lanes" aria-hidden>
                   {['Sun', 'Earth', 'Both', 'Comms'].map((l, i) => <i key={l} style={{ top: LANES[i][0] + LANES[i][1] / 2 }}>{l}</i>)}
                 </span>
@@ -358,7 +377,7 @@ export function Timeline({ allowCollapse = true }: { allowCollapse?: boolean }) 
             );
           })}
         </div>
-        <div className="tl-plot" ref={wrapRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={() => setHover(null)} style={{ height: H }}>
+        <div className="tl-plot" ref={wrapRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onPointerLeave={() => setHover(null)} style={{ height: H }}>
           <canvas ref={canvasRef} style={{ width: W, height: H }} />
           {hoverCard}
           {markers.filter((m) => m.t >= view[0] && m.t <= view[1]).map((m) => (
@@ -371,9 +390,14 @@ export function Timeline({ allowCollapse = true }: { allowCollapse?: boolean }) 
           )}
         </div>
       </div>
-      {!collapsed && ids.length === 1 && <p className="tl-hint"><Info aria-hidden />Use Compare on other sites to add rows.</p>}
+      {!collapsed && ids.length === 1 && <p className="tl-hint"><Info aria-hidden />Use Add to timeline on other sites to compare them here.</p>}
     </section>
   );
+}
+
+function fmtCoords(lat: number, lon: number): string {
+  const l = ((lon + 540) % 360) - 180;
+  return `${Math.abs(lat).toFixed(1)}\u00b0 ${lat < 0 ? 'S' : 'N'}, ${Math.abs(l).toFixed(1)}\u00b0 ${l < 0 ? 'W' : 'E'}`;
 }
 
 function panBy(dt: number) {

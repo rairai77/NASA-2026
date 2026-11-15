@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronDown, ChevronLeft, PanelLeftOpen, ChevronRight, CircleDashed, GitCompare, History, Info, Layers, ListOrdered, MapPin, Plus, Search, SearchX, Spline, Sun } from 'lucide-react';
-import type { VisResult } from '../engine/api.ts';
+import type { Query, RankResult, VisResult } from '../engine/api.ts';
 import { getEngine } from '../engine/client.ts';
 import { placeFor } from '../lib/places.ts';
 import { METRIC_BY_NAME, metricLabel } from '../query/metrics.ts';
 import { describeRegion } from '../query/query.ts';
-import { MAX_COMPARE, flyTo, patchQuery, runRank, select, setLayerState, toggleCompare, useStore, windowOf, type LeftTab, type Target } from '../store.ts';
+import { MAX_COMPARE, flyTo, patchQuery, resultId, runRank, select, setLayerState, toast, toggleCompare, useStore, windowOf, type LeftTab, type Target } from '../store.ts';
 import { DiffTab } from './DiffTab.tsx';
 import { LaneStrip } from './LaneStrip.tsx';
 import { ReplayTab } from './ReplayTab.tsx';
-import { Button, IconButton, Skeleton, Stat, Tabs, Tag, Tooltip, Why } from './ui.tsx';
+import { Button, IconButton, Skeleton, Tabs, Tag, Tooltip, Why } from './ui.tsx';
 
 export const COLORS = { sun: '#F5B700', earth: '#4FA3FF', both: '#FFFFFF', eclipse: '#FF4FD8' };
 
@@ -32,25 +32,44 @@ export function useSpark(t: Target | undefined, win: [number, number]) {
   return v;
 }
 
-export const COMPARE_TIP = 'Show this site as an extra row on the timeline to compare it with others';
-/** "Compare": add / remove a site as an extra row on the timeline (the compare list). */
+export const COMPARE_TIP = 'Add this site as an extra row on the timeline so you can compare it with others';
+
+/** Ranks of the sites in the latest ranking only (id -> rank). Anything else is from an earlier search. */
+export function useCurrentRanks(): Map<string, number> {
+  const results = useStore((s) => s.results);
+  return useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of results?.results ?? []) m.set(r.id ?? resultId(r.lat, r.lon), r.rank);
+    return m;
+  }, [results]);
+}
+
+/** Add / remove a site as a timeline row, with a toast on add. */
+export function toggleTimeline(id: string) {
+  const was = useStore.getState().compare.includes(id);
+  toggleCompare(id);
+  const now = useStore.getState().compare;
+  if (!was && now.includes(id)) toast(`Added to timeline (${now.length} of ${MAX_COMPARE})`);
+}
+
+/** "Add to timeline" / "On timeline": a site as an extra row on the timeline (the compare list). */
 export function TimelineToggle({ id, size = 'sm', compact }: { id: string; size?: 'sm' | 'md'; compact?: boolean }) {
   const on = useStore((s) => s.compare.includes(id));
   const full = useStore((s) => s.compare.length >= MAX_COMPARE);
-  const tip = on ? 'Remove this site from the timeline comparison' : full ? `Timeline is full (${MAX_COMPARE} sites). Remove one first.` : COMPARE_TIP;
+  const tip = on ? 'On timeline. Click to remove this site from the timeline' : full ? `Timeline is full (${MAX_COMPARE} sites). Remove one first.` : COMPARE_TIP;
   return (
     <span onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
       {compact
-        ? <IconButton icon={on ? Check : Plus} label={on ? 'Comparing: remove from timeline' : 'Compare on the timeline'} size={size} active={on} tip="left" className="pn-add" onClick={() => toggleCompare(id)} />
+        ? <IconButton icon={on ? Check : Plus} label={on ? 'On timeline (click to remove)' : 'Add to timeline'} size={size} active={on} tip="left" className="pn-add" disabled={!on && full} onClick={() => toggleTimeline(id)} />
         : <Tooltip content={tip} side="bottom" wrap>
-            <Button size="sm" icon={on ? Check : Plus} active={on} className="pn-add" disabled={!on && full} aria-label={`Compare: ${tip}`} onClick={() => toggleCompare(id)}>Compare</Button>
+            <Button size="sm" icon={on ? Check : Plus} active={on} className="pn-add" disabled={!on && full} aria-label={on ? 'On timeline' : `Add to timeline: ${tip}`} onClick={() => toggleTimeline(id)}>{on ? 'On timeline' : 'Add to timeline'}</Button>
           </Tooltip>}
     </span>
   );
 }
 
 const SHORT: Record<string, string> = {
-  sun_hours: 'Sun', earth_hours: 'Earth', both_hours: 'Sun + Earth', longest_sun_h: 'Longest Sun', longest_both_h: 'Longest both', longest_dark_h: 'Longest dark',
+  sun_hours: 'Sun', earth_hours: 'Earth', both_hours: 'Sun + Earth', longest_sun_h: 'Longest Sun', longest_both_h: 'Sun+Earth run', longest_dark_h: 'Longest dark',
   longest_earth_h: 'Longest Earth', comms_hours: 'Comms', slope_deg: 'Slope', sun_frac: 'Sun share', mean_sun_el_deg: 'Mean Sun el.', energy_wh: 'Energy', battery_wh_needed: 'Battery',
   eclipse_hours: 'Eclipse', elev_m: 'Elevation', psr_dist_km: 'To PSR', fault_dist_km: 'To fault', longest_comms_h: 'Longest comms', min_sun_el_deg: 'Min Sun el.',
 };
@@ -62,6 +81,70 @@ function statValue(name: string, v: number | undefined): { value: string; unit: 
 }
 const toneOf = (name: string): 'sun' | 'earth' | 'ok' | undefined => (/^(sun|longest_sun|mean_sun|min_sun)/.test(name) ? 'sun' : /earth|comms|both/.test(name) ? 'earth' : 'ok');
 
+const isHours = (name: string) => METRIC_BY_NAME[name]?.unit === 'h';
+/** Durations: 48 h or more in days with one decimal, shorter in hours. */
+function durParts(name: string, h: number): { value: string; unit: string } {
+  if (Math.abs(h) >= 48) return { value: (h / 24).toFixed(1), unit: 'd' };
+  const dg = METRIC_BY_NAME[name]?.digits ?? 0;
+  return { value: dg > 0 ? h.toFixed(dg) : String(Math.round(h)), unit: 'h' };
+}
+function fmtVal(name: string, v: number): string {
+  if (isHours(name)) { const p = durParts(name, v); return `${p.value} ${p.unit}`; }
+  const sv = statValue(name, v);
+  return `${sv.value}${sv.unit ? ` ${sv.unit}` : ''}`;
+}
+const labelOf = (m: string) => SHORT[m] ?? metricLabel(m);
+const sameVal = (m: string, a: number | undefined, b: number | undefined) => {
+  if (a === undefined || b === undefined) return a === b;
+  return Math.abs(a - b) < (isHours(m) ? 0.5 : 0.5 * Math.pow(10, -(METRIC_BY_NAME[m]?.digits ?? 1)));
+};
+
+/** One plain-language line on why #1 beats #2, built from the metrics (no LLM). `decider` is the stat that set the order. */
+export function explainRanking(res: RankResult, q: Query, winH: number): { text: string; decider?: string } {
+  const rs = res.results;
+  const objs = q.objectives.filter((o) => METRIC_BY_NAME[o.metric]);
+  if (rs.length < 2) return { text: 'Only one site passes your filters.', decider: objs[0]?.metric };
+  if (!objs.length) return { text: 'No ranking measure is set; sites are listed in search order.' };
+  const v = (i: number, m: string) => rs[i].metrics[m] as number | undefined;
+  const idx = objs.findIndex((o) => !sameVal(o.metric, v(0, o.metric), v(1, o.metric)));
+  if (idx < 0) return { text: `#1 and #2 tie on ${objs.map((o) => labelOf(o.metric)).join(' and ')}; listed in search order.`, decider: objs[0].metric };
+  const o = objs[idx], m = o.metric;
+  const a = v(0, m), b = v(1, m);
+  if (a === undefined || b === undefined) return { text: 'Ranked by ' + objs.map((x) => labelOf(x.metric)).join(', then ') + '.', decider: m };
+  const pair = `${fmtVal(m, a)} at #1 vs ${fmtVal(m, b)} at #2`;
+  if (q.mode === 'weighted') return { text: `Ranked by a weighted blend of ${objs.map((x) => labelOf(x.metric)).join(', ')}. On ${labelOf(m)}: ${pair}.`, decider: m };
+  if (idx === 0) {
+    const lead = o.dir === 'min' ? 'lowest' : 'highest';
+    const text = m === 'longest_both_h' ? `#1 keeps Sun and Earth together for ${fmtVal(m, a)} at a stretch, vs ${fmtVal(m, b)} at #2.`
+      : m === 'both_hours' ? `#1 has Sun and Earth together for ${fmtVal(m, a)}, vs ${fmtVal(m, b)} at #2.`
+      : `#1 has the ${lead} ${labelOf(m)}: ${pair}.`;
+    return { text, decider: m };
+  }
+  const tied = objs.slice(0, idx);
+  const tieAll = rs.every((_, i) => tied.every((t) => sameVal(t.metric, v(i, t.metric), v(0, t.metric))));
+  const full = tied.length === 1 && /^(sun_hours|longest_sun_h)$/.test(tied[0].metric) && (v(0, tied[0].metric) ?? 0) >= 0.98 * winH;
+  const lead = full && tieAll ? `All top sites have Sun for the whole window; ranked next by ${labelOf(m)}`
+    : `${tieAll ? `All top ${rs.length} sites` : '#1 and #2'} tie on ${tied.map((t) => labelOf(t.metric)).join(' and ')}; ranked next by ${labelOf(m)}`;
+  return { text: `${lead} (${pair}).`, decider: m };
+}
+
+function CardStat({ name, v, winH, coarse, decisive, tone }: { name: string; v: number | undefined; winH: number; coarse?: boolean; decisive?: boolean; tone?: 'sun' | 'earth' | 'ok' }) {
+  const edu = useStore((s) => s.educator);
+  const ok = v !== undefined && v !== null && !Number.isNaN(v);
+  const hrs = ok && isHours(name);
+  const parts = !ok ? { value: '—', unit: '' } : hrs ? durParts(name, v!) : statValue(name, v);
+  const pct = hrs && winH > 0 ? Math.max(0, Math.min(100, Math.round((100 * v!) / winH))) : null;
+  const approx = coarse && ok;
+  return (
+    <div className={`ui-stat pn-stat ${tone ? `ui-stat--${tone}` : ''} ${decisive ? 'is-decisive' : ''}`}
+      title={`${metricLabel(name, edu)}${decisive ? ' (decided the order)' : ''}${approx ? '. Approximate: found on the coarse 10 km grid' : ''}`}>
+      <span className="ui-stat-label">{SHORT[name] ?? metricLabel(name, edu)}</span>
+      <span className="ui-stat-value">{approx && <span className="pn-approx">≈</span>}{parts.value}<small>{parts.unit}</small></span>
+      {pct !== null && <span className="pn-stat-cap">{approx ? '≈' : ''}{pct}% of window</span>}
+    </div>
+  );
+}
+
 function regionLabel(q: ReturnType<typeof useStore.getState>['query']): string {
   const r = q.region;
   if (r.type === 'polar') return r.max_lat <= -85 || r.min_lat < 0 ? `South polar cap ${Math.abs(r.max_lat)}–${Math.abs(r.min_lat)}° S` : describeRegion(r);
@@ -69,19 +152,21 @@ function regionLabel(q: ReturnType<typeof useStore.getState>['query']): string {
   return d.charAt(0).toUpperCase() + d.slice(1);
 }
 
-function ResultCard({ id, rank, coarse, cols, win }: { id: string; rank: number; coarse?: boolean; cols: string[]; win: [number, number] }) {
+function ResultCard({ id, rank, coarse, cols, win, decider }: { id: string; rank: number; coarse?: boolean; cols: string[]; win: [number, number]; decider?: string }) {
   const t = useStore((s) => s.targets[id]);
   const sites = useStore((s) => s.sites);
   const selected = useStore((s) => s.selected === id);
-  const edu = useStore((s) => s.educator);
   const vis = useSpark(t, win);
   const place = useMemo(() => (t ? (t.kind === 'site' ? null : placeFor(t.lat, t.lon, sites)) : null), [t, sites]);
   if (!t) return null;
   const choose = () => { select(id); flyTo(id); };
+  const winH = (win[1] - win[0]) / 3600;
+  const title = place?.title ?? t.name;
+  const sub = [place?.distLabel, t.kind === 'site' && t.group ? t.group : ''].filter(Boolean).join(' · ');
   return (
     <li
       className={`pn-card ${selected ? 'is-sel' : ''}`} tabIndex={0} role="button" aria-pressed={selected}
-      aria-label={`Rank ${rank}, ${place?.title ?? t.name}`}
+      aria-label={`Rank ${rank}, ${title}`}
       onClick={choose}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(); } }}
       onMouseEnter={() => useStore.setState({ hoveredId: id })} onMouseLeave={() => useStore.setState({ hoveredId: null })}
@@ -89,17 +174,14 @@ function ResultCard({ id, rank, coarse, cols, win }: { id: string; rank: number;
     >
       <div className="pn-card-top">
         <span className={`pn-rank ${rank === 1 ? 'is-gold' : ''}`} aria-hidden>{rank}</span>
-        <div className="pn-card-title">
-          <b title={place?.title ?? t.name}>{place?.title ?? t.name}</b>
-          <span className="mono">{place?.distLabel && <span className="pn-dist">{place.distLabel} · </span>}{t.lat.toFixed(3)}°, {t.lon.toFixed(3)}°{coarse && <em title="Found on the coarse 10 km global grid"> · coarse 10 km</em>}</span>
+        <div className="pn-card-title" title={`${t.lat.toFixed(4)}°, ${t.lon.toFixed(4)}°`}>
+          <b>{title}</b>
+          {(sub || coarse) && <span>{sub}{coarse && <em title="Found on the coarse 10 km global grid: numbers marked ≈ are approximate">{sub ? ' · ' : ''}coarse 10 km</em>}</span>}
         </div>
-        <TimelineToggle id={id} />
+        <TimelineToggle id={id} compact />
       </div>
       <div className="pn-stats">
-        {cols.map((c, i) => {
-          const sv = statValue(c, t.metrics?.[c]);
-          return <Stat key={c} label={SHORT[c] ?? metricLabel(c, edu)} value={sv.value} unit={sv.unit} tone={i === 0 ? toneOf(c) : undefined} title={metricLabel(c, edu)} />;
-        })}
+        {cols.map((c, i) => <CardStat key={c} name={c} v={t.metrics?.[c]} winH={winH} coarse={coarse} decisive={c === decider} tone={i === 0 ? toneOf(c) : undefined} />)}
       </div>
       <LaneStrip vis={vis} win={win} />
     </li>
@@ -113,12 +195,15 @@ function ResultsTab() {
   const progress = useStore((s) => s.progress);
   const rankSkipped = useStore((s) => s.rankSkipped);
   const win = useMemo(() => windowOf(q), [q]);
+  const why = useMemo(() => (results && results.results.length ? explainRanking(results, q, (win[1] - win[0]) / 3600) : null), [results, q, win]);
   const cols = useMemo(() => {
     const names = [...q.objectives.map((o) => o.metric), ...q.filters.map((f) => f.metric)];
     const u = [...new Set(names)];
     for (const extra of ['sun_hours', 'earth_hours', 'longest_both_h', 'slope_deg']) if (u.length < 3 && !u.includes(extra)) u.push(extra);
-    return u.slice(0, 3);
-  }, [q]);
+    const c = u.slice(0, 3);
+    if (why?.decider && !c.includes(why.decider)) c[2] = why.decider;
+    return c;
+  }, [q, why]);
 
   if (ranking) {
     const pct = progress ? Math.min(100, (100 * progress.done) / Math.max(1, progress.total)) : 4;
@@ -177,10 +262,11 @@ function ResultsTab() {
   return (
     <div className="pn-body">
       <div className="pn-head">
-        <h2 className="pn-h" title={`${results.considered.toLocaleString()} cells considered, ${results.passedFilters.toLocaleString()} pass your filters`}>
-          Best {n} of {results.passedFilters.toLocaleString()} {results.considered > n ? 'cells' : 'candidates'}
+        <h2 className="pn-h" title={`${results.considered.toLocaleString()} spots checked, ${results.passedFilters.toLocaleString()} pass your filters`}>
+          Top {n} of {results.considered.toLocaleString()} spots checked
         </h2>
         <p className="pn-sub">{regionLabel(q)} {'·'} {grid} {'·'} {refine}{results.model === 'mock' ? ' · demo' : ''}</p>
+        {why && <p className="pn-why">{why.text}</p>}
       </div>
       {results.coarse && (
         <div className="pn-warn" role="note">
@@ -190,11 +276,11 @@ function ResultsTab() {
       )}
       <ol className="pn-list">
         {results.results.map((r) => {
-          const id = r.id ?? `r:${r.lat.toFixed(4)},${r.lon.toFixed(4)}`;
-          return <ResultCard key={id} id={id} rank={r.rank} coarse={r.coarse} cols={cols} win={win} />;
+          const id = r.id ?? resultId(r.lat, r.lon);
+          return <ResultCard key={id} id={id} rank={r.rank} coarse={r.coarse || results.coarse} cols={cols} win={win} decider={why?.decider} />;
         })}
       </ol>
-      <div className="pn-legend"><i style={{ background: 'var(--sun)' }} />Sun <i style={{ background: 'var(--earth)' }} />Earth <i style={{ background: 'var(--both)', border: '1px solid var(--border-strong)' }} />Both up <span>{'·'} tick = timeline cursor</span></div>
+      <div className="pn-legend"><i style={{ background: 'var(--sun)' }} />Sun <i style={{ background: 'var(--earth)' }} />Earth <i style={{ background: 'var(--both)', border: '1px solid var(--border-strong)' }} />Both up <span>{'·'} tick = timeline cursor {'·'} highlighted stat = what set the order</span></div>
     </div>
   );
 }
@@ -219,7 +305,7 @@ function SitesTab() {
         <Search aria-hidden />
         <input type="search" placeholder="Search sites" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Search sites" />
       </label>
-      <p className="pn-hint">Use <b>Compare</b> <Plus aria-hidden className="pn-inline-ic" /> to show up to {MAX_COMPARE} sites as rows on one timeline.</p>
+      <p className="pn-hint">Use <b>Add to timeline</b> <Plus aria-hidden className="pn-inline-ic" /> to show up to {MAX_COMPARE} sites as rows on one timeline.</p>
       {groups.map(([g, list]) => (
         <section key={g} className="pn-group">
           <button className="pn-group-h" onClick={() => setClosed({ ...closed, [g]: !closed[g] })} aria-expanded={!closed[g]}>
@@ -341,8 +427,8 @@ export function LeftPanel({ allowCollapse = true }: { allowCollapse?: boolean })
     { id: 'results', label: L('Results'), icon: ListOrdered, count: nRes || undefined, title: 'Results: ranked sites' },
     { id: 'sites', label: L('Sites'), icon: MapPin, count: nSites || undefined, title: 'Sites: curated landing sites' },
     { id: 'layers', label: L('Layers'), icon: Layers, count: nLayers || undefined, title: 'Layers: map overlays' },
-    { id: 'replay', label: L('Mission check'), icon: History, title: 'Mission check: did we predict when real landers lost sunlight?' },
-    { id: 'diff', label: L('Compare dates'), icon: GitCompare, title: 'Compare dates: save two date windows and see what changes' },
+    { id: 'replay', label: L('Missions'), icon: History, title: 'Mission check: did we predict when real landers lost sunlight?' },
+    { id: 'diff', label: L('Dates'), icon: GitCompare, title: 'Compare dates: save two date windows and see what changes' },
   ];
   const setCollapsed = (v: boolean) => useStore.setState({ leftCollapsed: v });
   if (collapsed) {

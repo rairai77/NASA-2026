@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { Check, Compass, ShieldCheck, X } from 'lucide-react';
-import { parseText, useStore } from '../store.ts';
-import { EXAMPLE_LIST } from './QueryBar.tsx';
+import { useStore } from '../store.ts';
+import { EXAMPLE_LIST, runExample } from './QueryBar.tsx';
 import { Button, IconButton, Spinner } from './ui.tsx';
 import { useBootSteps } from './Splash.tsx';
 
@@ -39,7 +39,7 @@ export function Welcome() {
         <p className="welcome-lead">Ask a question in plain words, or build one with chips, and get ranked sites you can inspect, check against real missions and stand on.</p>
         <div className="welcome-ex" role="group" aria-label="Example questions">
           {EXAMPLE_LIST.slice(0, 3).map((e) => (
-            <button key={e.label} className="welcome-card" onClick={() => { dismissWelcome(); runWhenReady(() => parseText(e.text)); }}>
+            <button key={e.label} className="welcome-card" onClick={() => { dismissWelcome(); runWhenReady(() => runExample(e)); }}>
               <e.icon aria-hidden /><b>{e.label}</b><small>{e.sub}</small>
             </button>
           ))}

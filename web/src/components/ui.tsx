@@ -7,14 +7,22 @@ import { ALIASES, TIPS } from '../lib/educatorText.ts';
 
 export const WHY = TIPS;
 
-export function Why({ id }: { id: string }) {
-  const educator = useStore((s) => s.educator);
-  const key = ALIASES[id] ?? id;
-  if (!educator || !WHY[key]) return null;
+/** Small (i) that explains a term: hover or keyboard focus shows the tooltip, a tap pins the text at the bottom of the screen. */
+/** A small ⓘ with the plain-language note for one glossary id, or several joined into one note. */
+export function Why({ id }: { id: string | string[] }) {
+  const [pinned, setPinned] = useState(false);
+  const text = (Array.isArray(id) ? id : [id]).map((i) => WHY[ALIASES[i] ?? i]).filter(Boolean).join(' ');
+  if (!text) return null;
   return (
-    <Tooltip content={WHY[key]} side="bottom" wrap>
-      <span className="why" tabIndex={0} aria-label={`Why? ${WHY[key]}`}>?</span>
-    </Tooltip>
+    <>
+      <Tooltip content={text} side="bottom" wrap>
+        <button type="button" className="why" aria-label={`What does this mean? ${text}`} aria-expanded={pinned}
+          onClick={(e) => { e.stopPropagation(); setPinned((p) => !p); }} onBlur={() => setPinned(false)}>
+          <Info aria-hidden />
+        </button>
+      </Tooltip>
+      {pinned && createPortal(<div className="why-note" role="note">{text}</div>, document.body)}
+    </>
   );
 }
 

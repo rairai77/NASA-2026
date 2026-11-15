@@ -17,11 +17,19 @@ export const TIPS: Record<string, string> = {
 // legacy ids used by existing <Why/> call sites
 export const ALIASES: Record<string, string> = { pole: 'why-pole-hard', charging: 'dust-charging', scarps: 'lobate-scarps', horizon: 'horizon-plot' };
 
-export interface TourStep { title: string; text: string; action: 'apollo' | 'pole' | 'scrub' | 'ask' | 'stand' }
+export interface TourStep { title: string; text: string; /** copy for the phone layout (no hover, wheel or desktop-only controls) */ phoneText?: string; action: 'answer' | 'why' | 'scrub' | 'stand' | 'how' }
 export const TOUR: TourStep[] = [
-  { title: '1. Meet the Moon', action: 'apollo', text: 'At Apollo 11 the Sun gets high overhead and a day lasts about two weeks. Look at the horizon plot in the Sky tab: the Sun track sweeps high above a flat skyline.' },
-  { title: '2. Go to the pole', action: 'pole', text: 'Here the Sun only skims the horizon. The grey skyline cuts into the Sun track, so the Sun is often hidden behind mountains and crater rims.' },
-  { title: '3. Scrub time', action: 'scrub', text: 'Drag the time cursor along the timeline. Watch the Sun and Earth move on the plot and the countdown to sunrise or sunset change. The bands show when the Sun, Earth, or both are up.' },
-  { title: '4. Ask a question', action: 'ask', text: 'Type a request such as “best sites for a week in June 2028”. Chips appear; edit one and the ranked sites update. No AI picks the winner; the chips are the contract.' },
-  { title: '5. Stand there, and check the work', action: 'stand', text: 'We have opened the first-person view (the “Stand here” button in the site panel does this any time): it shows the skyline from 2 m above the ground. Then open “How we know it’s right” and read the limits: Earth line of sight rather than a link budget, and not an official NASA product.' },
+  { title: '1. These are the best sites', action: 'answer',
+    text: 'These are the best sites for the question in the bar at the top, best first. Each card shows the numbers behind its rank and a strip of when the Sun and Earth are up. Click a card to fly there, and change the question any time.',
+    phoneText: 'These are the best sites for your question, best first. Each card shows the numbers behind its rank and when the Sun and Earth are up. Tap a card to see more.' },
+  { title: '2. Why it\u2019s #1', action: 'why',
+    text: 'This is the sky over the #1 site, looking straight up: the grey outline is the skyline, and the Sun and Earth tracks are drawn on it. A dot above the outline means that body is up at the time cursor. The ranking rewards sites where both stay up for long stretches.' },
+  { title: '3. Scrub time', action: 'scrub',
+    text: 'Drag the time cursor along the timeline, or let it play. Watch the Sun and Earth dots move on the plot. The bands show when the Sun, Earth, or both are up.',
+    phoneText: 'Drag the time cursor along the timeline. The bands show when the Sun, Earth, or both are up; the plot in the Site tab follows the cursor.' },
+  { title: '4. Stand there', action: 'stand',
+    text: 'Press \u201cStand here\u201d in the site panel to see the skyline from 2 m above the ground, the way a lander would.',
+    phoneText: 'Open the Site tab and press \u201cStand here\u201d to see the skyline from 2 m above the ground, the way a lander would.' },
+  { title: '5. How we know', action: 'how',
+    text: 'Open \u201cHow we know it\u2019s right\u201d to read the limits: Earth line of sight rather than a link budget, and not an official NASA product.' },
 ];

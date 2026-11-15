@@ -29,7 +29,7 @@ export function systemPrompt(today: string): string {
   return `You convert a mission planner's request about lunar landing sites into ONE call to the function set_query. Never write prose; only call the function.
 Today is ${today} (UTC). Resolve all relative dates ("next spring", "in March") against it. Dates are YYYY-MM-DD, window end is exclusive.
 If no time window is given, use window start = ${today}, end = one month later.
-Defaults when not stated: height_m 2, k 5, min_separation_km 2. Use region {type:"polar", min_lat:-90, max_lat:-85} when the user says "south pole" or gives no region.
+Defaults when not stated: height_m 2, k 5, min_separation_km 10. Use region {type:"polar", min_lat:-90, max_lat:-85} when the user says "south pole" or gives no region.
 Only include fields the user's request implies, except the defaults above.
 ${METRIC_DOC}
 Filters: {metric, op in <,<=,>,>=, value}. Objectives: {metric, dir in max,min}, in priority order (first is most important). mode "lexicographic" unless the user asks to weight objectives.

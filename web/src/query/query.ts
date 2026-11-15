@@ -13,11 +13,11 @@ export function defaultQuery(today = isoDay(new Date())): Query {
     region: { type: 'polar', min_lat: -90, max_lat: -85 },
     height_m: 2,
     filters: [],
-    objectives: [{ metric: 'sun_hours', dir: 'max' }],
+    objectives: [{ metric: 'sun_hours', dir: 'max' }, { metric: 'both_hours', dir: 'max' }],
     mode: 'lexicographic',
     weights: null,
     k: 5,
-    min_separation_km: 2,
+    min_separation_km: 10,
   };
 }
 
@@ -98,7 +98,53 @@ export function mergeQuery(base: Query, partial: unknown): Query {
 
 export interface ChipDesc { key: string; kind: 'window' | 'region' | 'height' | 'filter' | 'objective' | 'k' | 'sep' | 'relay'; text: string }
 
-export function describeRegion(r: Query['region']): string {
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** One human date format for the strip and editors: "Nov 15, 2026". */
+export function fmtDay(d: string): string {
+  const [y, m, dd] = d.slice(0, 10).split('-').map(Number);
+  return y && m && dd ? `${MON[m - 1]} ${dd}, ${y}` : d.slice(0, 10);
+}
+/** The query window is [start, end) internally; people read it as an inclusive range ("Nov 15 – Dec 14, 2026"). */
+export function fmtWindowIncl(a: string, b: string): string {
+  const last = addDays(b, -1);
+  const [ya, ma, da] = a.slice(0, 10).split('-').map(Number), [yb, mb, db] = last.split('-').map(Number);
+  if (!ya || !yb) return `${a.slice(0, 10)} to ${last}`;
+  return ya === yb ? `${MON[ma - 1]} ${da} – ${MON[mb - 1]} ${db}, ${yb}` : `${fmtDay(a)} – ${fmtDay(last)}`;
+}
+
+/** Objective chip text with its direction, e.g. "Lowest slope", "Most Sun hours". */
+export function objectiveText(metric: string, dir: 'max' | 'min', educator = false): string {
+  const l = metricLabel(metric, educator);
+  const m = METRIC_BY_NAME[metric];
+  if (m?.unit === 'h' && m.kind === 'window' && /hours$/i.test(l)) return `${dir === 'max' ? 'Most' : 'Fewest'} ${l}`;
+  if (/^longest /i.test(l)) return `${dir === 'max' ? 'Longest' : 'Shortest'} ${l.replace(/^longest /i, '')}`;
+  const lc = /^(Sun|Earth|PSR|DSN)/.test(l) ? l : l.charAt(0).toLowerCase() + l.slice(1);
+  return `${dir === 'max' ? 'Highest' : 'Lowest'} ${lc}`;
+}
+
+/** Tiny keyword prefill used when the language parser is unavailable: month + year, "N days", "south pole". */
+export function prefillFromText(text: string, base: Query): Query {
+  const q: Query = JSON.parse(JSON.stringify(base));
+  const full = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+  const mm = text.toLowerCase().match(/\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b\.?,?\s+(?:of\s+)?(20\d\d)\b/);
+  if (mm) {
+    const mi = full.findIndex((f) => f.startsWith(mm[1].slice(0, 3)));
+    const y = Number(mm[2]);
+    if (mi >= 0) {
+      const start = `${y}-${String(mi + 1).padStart(2, '0')}-01`;
+      const end = mi === 11 ? `${y + 1}-01-01` : `${y}-${String(mi + 2).padStart(2, '0')}-01`;
+      q.window = { start, end };
+    }
+  }
+  const nd = text.match(/\b(\d{1,3})[-\s]*(?:continuous\s+)?days?\b/i);
+  if (nd && Number(nd[1]) > 0) {
+    q.filters = [...q.filters.filter((f) => f.metric !== 'longest_both_h'), { metric: 'longest_both_h', op: '>=', value: Number(nd[1]) * 24 }];
+  }
+  if (/south(ern)?\s+pole|south polar/i.test(text)) q.region = { type: 'polar', min_lat: -90, max_lat: -85 };
+  return q;
+}
+
+export function describeRegion(r: Query['region'], siteName?: (id: string) => string | undefined): string {
   switch (r.type) {
     case 'polar': {
       const lo = Math.min(Math.abs(r.min_lat), Math.abs(r.max_lat)), hi = Math.max(Math.abs(r.min_lat), Math.abs(r.max_lat));
@@ -107,7 +153,7 @@ export function describeRegion(r: Query['region']): string {
       return hemi ? `${lo}–${hi}° ${hemi}` : `lat ${r.min_lat}° to ${r.max_lat}°`;
     }
     case 'circle': return `${r.radius_km} km around ${r.lat.toFixed(2)}°, ${r.lon.toFixed(2)}°`;
-    case 'sites': return `${r.ids.length} curated site${r.ids.length === 1 ? '' : 's'}`;
+    case 'sites': return r.ids.length === 1 && siteName?.(r.ids[0]) ? siteName(r.ids[0])! : `${r.ids.length} curated site${r.ids.length === 1 ? '' : 's'}`;
     case 'bbox': return `box ${r.south}° to ${r.north}° lat, ${r.west}° to ${r.east}° lon`;
     case 'global': return 'whole Moon';
   }

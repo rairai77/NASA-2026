@@ -12,7 +12,9 @@
   .desk-only { display: none !important; }
   .phone-only { display: inline-flex !important; }
   .app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
-  .topbar { flex: none; height: 48px; padding: 0 10px; gap: 8px; }
+  /* the topbar and query strip (and their popovers) sit above the site sheet (z 35) */
+  .topbar { flex: none; height: 48px; padding: 0 10px; gap: 8px; z-index: 40; }
+  .qstrip { z-index: 39; }
   .brand b { display: none; }
   .tb-mid { display: none; }
   .tb-right { margin-left: auto; }
@@ -42,6 +44,9 @@
   .site-sheet { position: absolute; inset: 0 0 calc(49px + env(safe-area-inset-bottom)) 0; z-index: 35; display: flex; background: var(--surface-0); }
   .site-sheet > .drawer { flex: 1; width: 100%; max-width: none; border: 0; }
   .is-phone .fp-layer { position: fixed; inset: 0; z-index: 80; }
+  /* first person on phone: the globe (Cesium) fills the screen under the HUD, bottom sheet and tabs go away */
+  .main.phone.fp-open > .center { position: fixed; inset: 0; z-index: 79; flex: none; }
+  .main.phone.fp-open > .sheet, .main.phone.fp-open > .sheet-tabs, .main.phone.fp-open > .site-sheet { display: none; }
 
   .welcome-back { position: fixed; inset: 48px 0 0 0; z-index: 90; }
   .welcome-lead + .welcome-lead { display: none; }
